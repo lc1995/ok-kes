@@ -1,0 +1,9 @@
+{
+  "page": "https://gamerch.com/chaoszeronightmare/1023947",
+  "image": "https://cdn.gamerch.com/contents/wiki/5514/entry/i7N0fMzE.jpg",
+  "source_size": [800, 400],
+  "crop_xyxy": [350, 60, 395, 125],
+  "processing": "Original BGR crop; runtime grayscale multi-scale matching",
+  "threshold": 0.75,
+  "validation_limit": "Clear closeup only; skill-effects screenshot still misses. Not yet verified in CN live gameplay."
+}

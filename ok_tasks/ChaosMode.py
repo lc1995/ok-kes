@@ -29,6 +29,8 @@ class ChaosMode(TriggerTask):
         self.default_config['_enabled'] = False
         self.default_config['配置操作'] = ""
         self.default_config['游戏语言'] = "简体中文"
+        self.default_config['遇到章鱼暂停'] = True
+        self._octopus_handoff = False
         self.default_config['刷存档主战员'] = "海德玛丽"
         self.default_config['存储数据保存上限大于多少'] = 120
         self.default_config['保留大于多少TB的存档'] = 62000
@@ -118,6 +120,10 @@ class ChaosMode(TriggerTask):
             "仅目标主战员列表装备：只安装对应装备位优先级列表内且符合原有替换规则的装备，"
             "不分配给队友；其余提炼，商店中则取消购买。"
         )
+        self.config_description['遇到章鱼暂停'] = (
+            "识别到章鱼后检查并尝试关闭游戏自动战斗，暂停工具并提醒。"
+            "手动打完后停在奖励、结算或路线页面，点击工具全局开始按钮继续。"
+        )
         self.config_description['闪光优先级'] = (
             "卡牌名称和描述无需完整填写，输入几个关键字即可，但顺序须与游戏原文一致。"
         )
@@ -153,8 +159,14 @@ class ChaosMode(TriggerTask):
         if sortie and sortie.enabled:
             sortie.disable()
         reset_all_status(self)
+        self._octopus_handoff = False
         _migrate_route_boss_to_elite(self)
         super().enable()
+
+    def disable(self):
+        # 停止任务即结束本次接管，避免重新开始时沿用旧暂停状态。
+        self._octopus_handoff = False
+        super().disable()
 
     def _check_upload_if_needed(self):
         check_upload_if_needed(self, "chaos")
@@ -165,6 +177,9 @@ class ChaosMode(TriggerTask):
     def run(self):
         # 每帧执行一次 OCR 并转简体, 供各页面处理函数复用
         self.all_texts = _simplify_texts(self.ocr())
+        # 乱入可能发生在战斗结束后的过渡阶段，优先于所有点击及卡住兜底检查。
+        if utils_chaos.handle_octopus_handoff(self):
+            return
         # 依次尝试各页面处理函数, 命中(返回 True)即结束本次循环
         for handle_page in utils_chaos.PAGE_HANDLERS:
             if handle_page(self):

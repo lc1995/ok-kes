@@ -28,6 +28,7 @@ from utils import (
 import re
 import random
 import time
+from octopus_detection import match_octopus, THRESHOLD as OCTOPUS_THRESHOLD
 
 
 # ------------------------- 卡厄思模式独有页面处理函数 -------------------------
@@ -413,6 +414,96 @@ def handle_save_target_member(task: TriggerTask):
     _move_and_click(task, 0.182, 0.081)
     task.sleep(2)
     return True
+
+def _octopus_auto_battle_state(task: TriggerTask):
+    """沿用现有白色指示点判断；战斗UI不完整时不猜测开关状态。"""
+    hand_count = find_box_at_point(task, 0.512, 0.969)
+    auto_text = _get_region_text(task, (0.835, 0.015, 0.935, 0.110))
+    if not (hand_count and re.search(r'\d+/10', hand_count.name)
+            and re.search(r'自动|自動|AUTO', auto_text, re.IGNORECASE)):
+        return None
+    from ok.feature.Box import Box
+    from ok.util.color import calculate_color_percentage
+    white_ratio = calculate_color_percentage(
+        task.frame,
+        {'r': (255, 255), 'g': (255, 255), 'b': (255, 255)},
+        box=Box(x=int(0.877 * task.width), y=int(0.050 * task.height),
+                width=4, height=4),
+    )
+    task.log_info(f"章鱼接管：自动战斗指示点白色占比={white_ratio:.2%}")
+    return white_ratio <= 0.02
+
+
+def _octopus_handoff_finished(task: TriggerTask):
+    """必须看到明确的战后页面才能恢复，不能仅凭怪物模板消失解除保护。"""
+    hand_count = find_box_at_point(task, 0.512, 0.969)
+    if hand_count and re.search(r'\d+/10', hand_count.name):
+        return False
+    # 玩家可能已手动结束整局并回到入口；沿用噩梦检查的双区域条件。
+    if ("配置队伍" in _get_region_text(task, (0.070, 0.010, 0.230, 0.090))
+            and "进入" in _get_region_text(task, (0.900, 0.870, 0.990, 0.970))):
+        return True
+    title = _get_region_text(task, (0.300, 0.010, 0.710, 0.200))
+    if any(word in title for word in (
+        "装备", "卡牌奖励", "结算", "存储数据收集完成",
+        "存档资料收集完成", "探险结果", "探索结果",
+    )):
+        return True
+    return bool(task.find_one(
+        feature_name="position",
+        box=task.box_of_screen(0.335, 0.568, 0.453, 0.751),
+    ))
+
+
+def handle_octopus_handoff(task: TriggerTask):
+    """章鱼出现后交给玩家；全局恢复时确认已离开战斗再继续自动流程。"""
+    if not _get_config_value(task, "遇到章鱼暂停", False):
+        task._octopus_handoff = False
+        return False
+    match = match_octopus(task.frame)
+    enemy = match if match and match.confidence >= OCTOPUS_THRESHOLD else None
+    now = time.time()
+    if now - getattr(task, '_octopus_scan_log_time', 0) >= 30:
+        task._octopus_scan_log_time = now
+        score = match.confidence if match else 0.0
+        task.log_info(f"章鱼眼部检测：最高相似度={score:.4f}，阈值={OCTOPUS_THRESHOLD}")
+    pending = getattr(task, "_octopus_handoff", False)
+    if not enemy and not pending:
+        return False
+    if not enemy and _octopus_handoff_finished(task):
+        task._octopus_handoff = False
+        # 手动处理期间不计入画面卡住时间，避免恢复后马上执行随机兜底。
+        task._prev_frame_gray = None
+        task._last_change_time = time.time()
+        task.log_info("章鱼接管结束：已识别战后页面，继续自动流程")
+        return False
+
+    task._octopus_handoff = True
+    if enemy:
+        task.log_info(f"检测到章鱼，眼部模板相似度={enemy.confidence:.4f}，"
+                      f"位置=({enemy.x},{enemy.y},{enemy.width},{enemy.height})",
+                      screenshot=True)
+    message = "章鱼接管：无法确认自动战斗已关闭，请手动检查开关。"
+    try:
+        auto_enabled = _octopus_auto_battle_state(task)
+        if auto_enabled is True:
+            # 仅点击一次，并用新画面确认；禁止盲目重试而把关闭状态切回开启。
+            _move_and_click(task, 0.880, 0.056)
+            task.sleep(0.3)
+            if task.next_frame() is not None:
+                task.all_texts = _simplify_texts(task.ocr())
+                auto_enabled = _octopus_auto_battle_state(task)
+            else:
+                auto_enabled = None
+        if auto_enabled is False:
+            message = "章鱼接管：游戏自动战斗已关闭。"
+        message += "工具已暂停，请手动打完，在奖励、结算或路线页面点击全局开始继续。"
+        task.log_warning(message, notify=True, screenshot=True)
+    finally:
+        # 暂停执行器而非禁用任务，保留本局状态；本轮调用者必须立即返回。
+        task.executor.pause()
+    return True
+
 
 def handle_battle_auto_check(task: TriggerTask):
     """战斗页面: 检测手牌数并检查自动战斗是否开启，如关闭则开启。"""

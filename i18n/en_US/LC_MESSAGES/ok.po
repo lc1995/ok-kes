@@ -269,6 +269,12 @@ msgstr ""
 "1. Enable auto battle and auto story in the game.\n"
 "2. International server players should set Game Language to Traditional Chinese in this mode."
 
+msgid "遇到章鱼暂停"
+msgstr "Pause when an octopus appears"
+
+msgid "识别到章鱼后检查并尝试关闭游戏自动战斗，暂停工具并提醒。手动打完后停在奖励、结算或路线页面，点击工具全局开始按钮继续。"
+msgstr "When an octopus is detected, check and try to turn off in-game auto battle, then pause the tool and notify you. Finish the battle manually, stay on a reward, settlement, or route screen, and click the global Start button to resume."
+
 msgid "首层结束策略"
 msgstr "First-floor completion strategy"
 
