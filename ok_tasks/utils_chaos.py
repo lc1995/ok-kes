@@ -214,6 +214,56 @@ def handle_zero_system_initial_page(task: TriggerTask):
     return True
 
 
+def _nightmare_switch_state(frame):
+    """结合右侧滑块和面板背景判断状态；过渡画面返回未知。"""
+    if frame is None or frame.size == 0:
+        return None
+    height, width = frame.shape[:2]
+
+    def mean_rgb(region):
+        x1, y1, x2, y2 = region
+        patch = frame[int(y1 * height):int(y2 * height),
+                      int(x1 * width):int(x2 * width), :3]
+        return patch.mean(axis=(0, 1))[::-1] if patch.size else None
+
+    knob = mean_rgb((0.959, 0.038, 0.973, 0.056))
+    background = mean_rgb((0.940, 0.120, 0.970, 0.160))
+    if knob is None or background is None:
+        return None
+    if min(knob) > 185 and knob[2] - knob[1] > 8 and max(background) < 85:
+        return True
+    if (min(knob) > 145 and max(knob) - min(knob) < 25
+            and min(background) > 145 and max(background) - min(background) < 25):
+        return False
+    return None
+
+
+def handle_enable_nightmare(task: TriggerTask):
+    """进入前确认噩梦已开启；一次点击后必须重新截图确认。"""
+    if not _get_config_value(task, "自动开启噩梦模式", False):
+        return False
+    if "配置队伍" not in _get_region_text(task, (0.070, 0.010, 0.230, 0.090)):
+        return False
+    if "进入" not in _get_region_text(task, (0.900, 0.870, 0.990, 0.970)):
+        return False
+    state = _nightmare_switch_state(task.frame)
+    if state is True:
+        return False
+    if state is False:
+        task.log_info("噩梦模式关闭，点击开启")
+        _move_and_click(task, 0.947, 0.047)
+    # 等待动画并获取新帧，状态未知时不盲点，也不放行进入按钮。
+    task.sleep(1)
+    frame = task.next_frame()
+    if frame is not None and _nightmare_switch_state(frame) is True:
+        task.log_info("已确认噩梦模式开启")
+        return True
+    task.log_warning("无法确认噩梦模式已开启，工具已暂停，请检查配置队伍页面的右上角开关。",
+                     notify=True, screenshot=True)
+    task.executor.pause()
+    return True
+
+
 def handle_disable_adaptation_distortion(task: TriggerTask):
     """刷空档时关闭已启用的适应畸变。"""
     if _get_config_value(task, "刷空档", False) is not True:

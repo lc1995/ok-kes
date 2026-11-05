@@ -30,6 +30,7 @@ class ChaosMode(TriggerTask):
         self.default_config['配置操作'] = ""
         self.default_config['游戏语言'] = "简体中文"
         self.default_config['遇到章鱼暂停'] = True
+        self.default_config['自动开启噩梦模式'] = True
         self._octopus_handoff = False
         self.default_config['刷存档主战员'] = "海德玛丽"
         self.default_config['存储数据保存上限大于多少'] = 120
@@ -120,6 +121,7 @@ class ChaosMode(TriggerTask):
             "仅目标主战员列表装备：只安装对应装备位优先级列表内且符合原有替换规则的装备，"
             "不分配给队友；其余提炼，商店中则取消购买。"
         )
+        self.config_description['自动开启噩梦模式'] = "每轮在配置队伍页面检查噩梦开关，关闭时开启；无法确认状态时暂停。关闭此选项则不操作游戏内开关。"
         self.config_description['遇到章鱼暂停'] = (
             "识别到章鱼后检查并尝试关闭游戏自动战斗，暂停工具并提醒。"
             "手动打完后停在奖励、结算或路线页面，点击工具全局开始按钮继续。"
@@ -179,6 +181,8 @@ class ChaosMode(TriggerTask):
         self.all_texts = _simplify_texts(self.ocr())
         # 乱入可能发生在战斗结束后的过渡阶段，优先于所有点击及卡住兜底检查。
         if utils_chaos.handle_octopus_handoff(self):
+            return
+        if utils_chaos.handle_enable_nightmare(self):
             return
         # 依次尝试各页面处理函数, 命中(返回 True)即结束本次循环
         for handle_page in utils_chaos.PAGE_HANDLERS:

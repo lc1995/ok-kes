@@ -275,6 +275,12 @@ msgstr "Pause when an octopus appears"
 msgid "识别到章鱼后检查并尝试关闭游戏自动战斗，暂停工具并提醒。手动打完后停在奖励、结算或路线页面，点击工具全局开始按钮继续。"
 msgstr "When an octopus is detected, check and try to turn off in-game auto battle, then pause the tool and notify you. Finish the battle manually, stay on a reward, settlement, or route screen, and click the global Start button to resume."
 
+msgid "自动开启噩梦模式"
+msgstr "Automatically enable Nightmare mode"
+
+msgid "每轮在配置队伍页面检查噩梦开关，关闭时开启；无法确认状态时暂停。关闭此选项则不操作游戏内开关。"
+msgstr "Check the Nightmare switch on the team setup screen each run and enable it if off. Pause if its state cannot be confirmed. Disable this option to leave the in-game switch unchanged."
+
 msgid "首层结束策略"
 msgstr "First-floor completion strategy"
 
