@@ -53,6 +53,7 @@ class ChaosMode(TriggerTask):
         self.default_config['需要冥想的卡牌'] = ["剑雨", "展开极光"]
         self.default_config['多少信用点以上冥想'] = 300
         self.default_config['商店刷新信用点阈值'] = 300
+        self.default_config['装备选择策略'] = "原有策略"
         self.default_config['装备1号位优先级'] = ["蚀化臂铠"]
         self.default_config['装备2号位优先级'] = ["拷问工具箱"]
         self.default_config['装备3号位优先级'] = ["异象石碑"]
@@ -103,9 +104,15 @@ class ChaosMode(TriggerTask):
                 ],
             },
             '第几层boss前自动暂停': {'type': 'drop_down', 'options': ['不暂停', '1', '2']},
+            '装备选择策略': {'type': 'drop_down', 'options': ['原有策略', '仅目标主战员列表装备']},
             '存储数据保存上限大于多少': {'min': 0, 'max': 170},
         }
         self.config_description['游戏语言'] = "国际服请设置为繁体中文"
+        self.config_description['装备选择策略'] = (
+            "原有策略：优先给刷存档主战员升级，否则随机给队友。"
+            "仅目标主战员列表装备：只安装对应装备位优先级列表内且符合原有替换规则的装备，"
+            "不分配给队友；其余提炼，商店中则取消购买。"
+        )
         self.config_description['闪光优先级'] = (
             "卡牌名称和描述无需完整填写，输入几个关键字即可，但顺序须与游戏原文一致。"
         )

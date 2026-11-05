@@ -2458,6 +2458,22 @@ def _find_target_member_index(
     return target_member_index
 
 
+def _refine_equipment(task: TriggerTask):
+    """点击装备页面底部的提炼按钮，未找到时返回 False。"""
+    refine_box = next(
+        (b for b in task.all_texts
+         if 0.522 <= (b.x + b.width / 2) / task.width <= 0.999
+         and 0.879 <= (b.y + b.height / 2) / task.height <= 0.996
+         and "提炼" in b.name),
+        None,
+    )
+    if not refine_box:
+        return False
+    task.click_box(refine_box)
+    task.sleep(1)
+    return True
+
+
 def handle_equipment(task: TriggerTask):
     """装备选择/安装界面: 按装备位优先级选择，并维护目标主战员的装备状态。"""
     title = find_box_at_point(task, 0.499, 0.126)
@@ -2466,6 +2482,7 @@ def handle_equipment(task: TriggerTask):
 
     task.log_info("检测到装备页面")
     equipment = _equipment_state(task)
+    target_only = _get_config_value(task, "装备选择策略", "原有策略") == "仅目标主战员列表装备"
     equip_hint = find_box_at_point(task, 0.921, 0.135)
 
     if equip_hint and _get_game_text(task, '请选择主战员') in equip_hint.name:
@@ -2553,7 +2570,7 @@ def handle_equipment(task: TriggerTask):
         )
         tracks_target_member = "刷存档主战员" in getattr(task, "default_config", {})
         preferred_member_index = (
-            target_member_index if tracks_target_member else (0 if lv_texts else None)
+            target_member_index if tracks_target_member or target_only else (0 if lv_texts else None)
         )
 
         slot = new_equipment["slot"]
@@ -2596,8 +2613,12 @@ def handle_equipment(task: TriggerTask):
                 should_install_first = False
                 install_reason = "该主战员其他装备位已有传说装备"
                 task.log_info(
-                    "目标主战员已安装传说装备，新传说装备改由其他主战员安装"
+                    "目标主战员已安装传说装备，新传说装备不再安装给目标主战员"
                 )
+
+        if target_only and new_equipment["rank"] is None:
+            should_install_first = False
+            install_reason = "装备未命中对应装备位优先级列表"
 
         if should_install_first and preferred_member_index is not None:
             chosen = lv_texts[preferred_member_index]
@@ -2629,7 +2650,7 @@ def handle_equipment(task: TriggerTask):
 
         other_members = [
             level_box for index, level_box in enumerate(lv_texts)
-            if index != preferred_member_index
+            if not target_only and index != preferred_member_index
         ]
         if other_members:
             chosen = random.choice(other_members)
@@ -2654,22 +2675,15 @@ def handle_equipment(task: TriggerTask):
             return False
 
         if is_purchase_page:
-            task.log_info("购买装备无法分配给任何主战员，点击「取消」")
+            task.log_info(f"购买装备未满足分配条件，原因={install_reason}，点击「取消」")
+            if target_only:
+                task.node_status.setdefault("rejected_shop_equipment", []).append(new_equipment["name"])
             task.click_box(cancel_box)
             task.sleep(1)
             return True
 
-        refine_box = next(
-            (b for b in task.all_texts
-             if 0.522 <= (b.x + b.width / 2) / task.width <= 0.999
-             and 0.879 <= (b.y + b.height / 2) / task.height <= 0.996
-             and "提炼" in b.name),
-            None
-        )
-        if refine_box:
-            task.log_info(f"{slot + 1}号位无需替换且没有其他主战员可选，点击提炼")
-            task.click_box(refine_box)
-            task.sleep(1)
+        task.log_info(f"{slot + 1}号位装备未满足分配条件，原因={install_reason}，尝试提炼")
+        if _refine_equipment(task):
             return True
 
         task.log_info("未找到可选择的主战员或提炼按钮")
@@ -2719,7 +2733,20 @@ def handle_equipment(task: TriggerTask):
         if chosen_index is not None:
             break
 
-    if chosen_index is None:
+    if chosen_index is None and target_only:
+        listed_candidates = [candidate for candidate in candidates if candidate["rank"] is not None]
+        if listed_candidates:
+            # 同优先级装备仍可能提升品质，进入安装页后按实际品质判断。
+            click_position = listed_candidates[0]["click_position"]
+            task.log_info("选择列表内装备，进入安装页面检查目标主战员是否需要替换")
+        else:
+            task.log_info("候选装备均未命中列表，尝试提炼")
+            if _refine_equipment(task):
+                return True
+            # 部分奖励页需先选一件装备，安装页才提供提炼按钮。
+            click_position = candidates[0]["click_position"]
+            task.log_info("当前页面没有提炼按钮，先选择装备进入安装页面提炼")
+    elif chosen_index is None:
         empty_slot_candidates = [
             candidate for candidate in candidates
             if not _current_equipment_for_slot(task, equipment, candidate["slot"])[0]
@@ -3769,6 +3796,7 @@ def handle_rest(task: TriggerTask):
     shop_box = find_box_at_point(task, 0.360, 0.138)
     if shop_box and "德朗商店" in shop_box.name and hasattr(task, 'node_status') and task.node_status.get('shop', False):
         task.log_info("检测到德朗商店，且 node_status['shop']=True，进入商店")
+        task.node_status.pop("rejected_shop_equipment", None)
         task.click_box(shop_box)
         task.sleep(2)
         return True
@@ -3886,6 +3914,14 @@ def handle_shop(task: TriggerTask):
                 None,
                 )
             else:
+                if (
+                    _get_config_value(task, "装备选择策略", "原有策略") == "仅目标主战员列表装备"
+                    and _match_equipment_name(
+                        item_name, task.node_status.get("rejected_shop_equipment", []),
+                    )[0] is not None
+                ):
+                    task.log_info(f"德朗商店: 装备「{item_name}」已确认不适合目标主战员，跳过")
+                    continue
                 matched_name = next(
                 (canonical_name
                  for priority in equipment_priorities
@@ -3929,6 +3965,7 @@ def handle_shop(task: TriggerTask):
                 )
             else:
                 task.log_info("德朗商店没有符合要求的商品，点击「免费」刷新")
+            task.node_status.pop("rejected_shop_equipment", None)
             task.click_box(free_box)
             task.sleep(1)
             return True
@@ -3988,6 +4025,7 @@ def handle_shop(task: TriggerTask):
             f"德朗商店免费刷新已用完，当前信用点{current_credit}超过阈值"
             f"{refresh_credit_threshold}，付费刷新需{refresh_price}信用点，点击刷新"
         )
+        task.node_status.pop("rejected_shop_equipment", None)
         task.click_box(refresh_price_box)
         task.sleep(1)
         return True
