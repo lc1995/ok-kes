@@ -69,6 +69,8 @@ class ChaosMode(TriggerTask):
         self.default_config['面具卡牌刻印'] = "自身攻击卡牌伤害总量提升30%"
         self.default_config['刷初始卡牌'] = ""
         self.default_config['只打第一层'] = False
+        self.default_config['首层结束策略'] = "自动逃离"
+        self.default_config['暂停所需目标装备数量'] = 3
         # 路线节点优先级 (列表), 越靠前优先级越高
         self.default_config['路线优先级'] = ["休息", "事件", "小怪", "精英"]
         self.default_config['几轮后停止(0为不停止)'] = 0
@@ -105,6 +107,9 @@ class ChaosMode(TriggerTask):
             },
             '第几层boss前自动暂停': {'type': 'drop_down', 'options': ['不暂停', '1', '2']},
             '装备选择策略': {'type': 'drop_down', 'options': ['原有策略', '仅目标主战员列表装备']},
+            '只打第一层': {'sub_configs': {True: ['首层结束策略', '暂停所需目标装备数量']}},
+            '首层结束策略': {'type': 'drop_down', 'options': ['自动逃离', '目标装备达标时暂停']},
+            '暂停所需目标装备数量': {'min': 1, 'max': 3},
             '存储数据保存上限大于多少': {'min': 0, 'max': 170},
         }
         self.config_description['游戏语言'] = "国际服请设置为繁体中文"
@@ -121,6 +126,13 @@ class ChaosMode(TriggerTask):
         )
         self.config_description['刷空档'] = (
             "初始任务必须包含“移除2张”，否则重新开始；不能与“刷初始卡牌”同时使用。"
+        )
+        self.config_description['首层结束策略'] = (
+            "仅在开启“只打第一层”时生效。默认自动逃离；选择“目标装备达标时暂停”后，"
+            "首层结束时目标装备数量达标则暂停，否则自动逃离。装备达标暂停优先于首层闪光重刷。"
+        )
+        self.config_description['暂停所需目标装备数量'] = (
+            "取值1～3。统计刷存档主战员当前已装备且命中对应装备位优先级列表的装备，每个装备位计1件。"
         )
         self.config_description['首层刷特定闪光'] = (
             "默认刷闪光优先级第一张，可刷神闪，第一层没刷出自动逃脱"

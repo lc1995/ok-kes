@@ -269,6 +269,24 @@ msgstr ""
 "1. Enable auto battle and auto story in the game.\n"
 "2. International server players should set Game Language to Traditional Chinese in this mode."
 
+msgid "首层结束策略"
+msgstr "First-floor completion strategy"
+
+msgid "自动逃离"
+msgstr "Automatically escape"
+
+msgid "目标装备达标时暂停"
+msgstr "Pause when target equipment count is reached"
+
+msgid "暂停所需目标装备数量"
+msgstr "Target equipment count required to pause"
+
+msgid "仅在开启“只打第一层”时生效。默认自动逃离；选择“目标装备达标时暂停”后，首层结束时目标装备数量达标则暂停，否则自动逃离。装备达标暂停优先于首层闪光重刷。"
+msgstr "Only applies when First Floor Only is enabled. Escape automatically by default. With the target equipment strategy, pause at the end of the first floor if the required count is reached; otherwise escape. Equipment-based pausing takes priority over restarting for a missing first-floor Flash."
+
+msgid "取值1～3。统计刷存档主战员当前已装备且命中对应装备位优先级列表的装备，每个装备位计1件。"
+msgstr "Range: 1-3. Count equipment currently worn by the save-data target character that matches the priority list for its slot. Each slot counts as one item."
+
 msgid "装备选择策略"
 msgstr "Equipment selection strategy"
 

@@ -4194,12 +4194,33 @@ def _initial_member_status():
 
 
 def _finish_only_first_layer(task: TriggerTask) -> bool:
-    """检查并完成只打第一层的退出操作：如果 pass_final_boss_count >= 1 且配置'只打第一层'为 True，则成功次数+1、点击退出并返回 True。"""
+    """首层结束时按配置暂停或退出，保留未刷到指定闪光时的重刷逻辑。"""
     if not (
         hasattr(task, 'node_status')
         and task.node_status.get('pass_final_boss_count', 0) >= 1
     ):
         return False
+
+    if (
+        _get_config_value(task, "只打第一层", False)
+        and _get_config_value(task, "首层结束策略", "自动逃离") == "目标装备达标时暂停"
+    ):
+        equipment = _equipment_state(task)
+        target_count = sum(
+            _match_equipment_name(name, _equipment_priority(task, slot))[0] is not None
+            for slot, name in enumerate(equipment["names"])
+        )
+        required_count = _get_config_value(task, "暂停所需目标装备数量", 3)
+        if target_count >= required_count:
+            try:
+                task.log_warning(
+                    f"首层已完成，目标装备数量达标（{target_count}/{required_count}），工具已暂停，请手动接管。",
+                    notify=True,
+                    screenshot=True,
+                )
+            finally:
+                task.executor.pause()
+            return True
 
     if (
         _get_config_value(task, "首层刷特定闪光", False) is True
