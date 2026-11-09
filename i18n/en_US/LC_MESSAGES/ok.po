@@ -331,3 +331,18 @@ msgstr "Flash blacklist"
 
 msgid "填写描述关键字。如果闪光选项出现该描述，则不选择这个闪光。关键字写法和“闪光优先级”相同，按卡牌名加描述的原文顺序填写，部分关键字即可。列表为空时不启用拉黑。"
 msgstr "Enter description keywords. If a flash option shows that description, do not select it. Use the same keyword style as Flash Priority: card name plus description in the original order, and partial keywords are enough. An empty list disables the blacklist."
+
+msgid "界面调试"
+msgstr "Screen debug"
+
+msgid "每个界面截图"
+msgstr "Screenshot each screen"
+
+msgid ""
+"开启后，卡厄思、出击和剧情模式每次进入新的游戏界面时保存一张截图。\n"
+"截图保存在 page_screenshots 目录，与 screenshots 分开，启动时不会清空。\n"
+"同一界面连续停留只保存一次，离开后再进入会再保存。"
+msgstr ""
+"When enabled, Chaos, Sortie, and Story modes save one screenshot each time a new game screen is entered.\n"
+"Images are stored in the page_screenshots directory, separate from screenshots, and are not cleared on startup.\n"
+"Staying on the same screen does not create another image; leaving and returning does."

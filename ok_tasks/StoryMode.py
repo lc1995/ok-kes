@@ -1,5 +1,6 @@
 from ok import TriggerTask, og
 
+import page_debug
 import utils_story
 from utils import _simplify_texts
 
@@ -17,6 +18,7 @@ class StoryMode(TriggerTask):
 
     def enable(self):
         """开启剧情模式时自动禁用出击和卡厄思模式。"""
+        page_debug.reset_page_debug(self)
         from SortieMode import SortieMode
         from ChaosMode import ChaosMode
         sortie = og.executor.get_task_by_class(SortieMode)
@@ -30,7 +32,4 @@ class StoryMode(TriggerTask):
     def run(self):
         # 每帧执行一次 OCR 并转简体, 供各页面处理函数复用
         self.all_texts = _simplify_texts(self.ocr())
-        # 依次尝试各页面处理函数, 命中(返回 True)即结束本次循环
-        for handle_page in utils_story.PAGE_HANDLERS:
-            if handle_page(self):
-                return
+        page_debug.dispatch_page_handlers(self, utils_story.PAGE_HANDLERS)

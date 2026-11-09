@@ -1,5 +1,6 @@
 from ok import TriggerTask, og
 
+import page_debug
 import utils_sortie
 from config_io import (
     make_export_callback,
@@ -97,6 +98,7 @@ class SortieMode(TriggerTask):
 
     def enable(self):
         """开启出击模式时自动禁用卡厄思模式，重置状态并迁移配置。"""
+        page_debug.reset_page_debug(self)
         from ChaosMode import ChaosMode
         chaos = og.executor.get_task_by_class(ChaosMode)
         if chaos and chaos.enabled:
@@ -113,8 +115,5 @@ class SortieMode(TriggerTask):
 
     def run(self):
         self.all_texts = _simplify_texts(self.ocr())
-        for handle_page in utils_sortie.PAGE_HANDLERS:
-            if handle_page(self):
-                return
-        # 帧末尾检查是否需要上传配置
-        self._check_upload_if_needed()
+        if not page_debug.dispatch_page_handlers(self, utils_sortie.PAGE_HANDLERS):
+            self._check_upload_if_needed()

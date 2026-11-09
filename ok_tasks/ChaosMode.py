@@ -1,5 +1,6 @@
 from ok import TriggerTask, og
 
+import page_debug
 import utils_chaos
 from config_io import (
     make_export_callback,
@@ -188,6 +189,7 @@ class ChaosMode(TriggerTask):
 
     def enable(self):
         """开启卡厄思模式时自动禁用出击模式，重置状态并迁移配置。"""
+        page_debug.reset_page_debug(self)
         from SortieMode import SortieMode
         sortie = og.executor.get_task_by_class(SortieMode)
         if sortie and sortie.enabled:
@@ -211,14 +213,11 @@ class ChaosMode(TriggerTask):
     def run(self):
         # 每帧执行一次 OCR 并转简体, 供各页面处理函数复用
         self.all_texts = _simplify_texts(self.ocr())
-        # 乱入可能发生在战斗结束后的过渡阶段，优先于所有点击及卡住兜底检查。
-        if utils_chaos.handle_octopus_handoff(self):
-            return
-        if utils_chaos.handle_enable_nightmare(self):
-            return
-        # 依次尝试各页面处理函数, 命中(返回 True)即结束本次循环
-        for handle_page in utils_chaos.PAGE_HANDLERS:
-            if handle_page(self):
-                return
-        # 帧末尾检查是否需要上传配置
-        self._check_upload_if_needed()
+        # 乱入和噩梦开关优先于普通页面。命中的界面会在点击前被截图。
+        handled = page_debug.dispatch_page_handlers(self, (
+            utils_chaos.handle_octopus_handoff,
+            utils_chaos.handle_enable_nightmare,
+            *utils_chaos.PAGE_HANDLERS,
+        ))
+        if not handled:
+            self._check_upload_if_needed()

@@ -87,6 +87,12 @@ upload_config_option = ConfigOption('配置上传', {
     '是否上传配置': True,
 }, description='开启后每5分钟自动上传匿名的配置信息和胜率，帮助统计热门配置。\n不上传任何个人信息、游戏账号、截图、IP地址等隐私数据。\n仅上传配置内容和胜率统计数据。')
 
+page_debug_option = ConfigOption('界面调试', {
+    '每个界面截图': False,
+}, description='开启后，卡厄思、出击和剧情模式每次进入新的游戏界面时保存一张截图。\n'
+               '截图保存在 page_screenshots 目录，与 screenshots 分开，启动时不会清空。\n'
+               '同一界面连续停留只保存一次，离开后再进入会再保存。')
+
 ocr_backend_option = ConfigOption('OCR设置', {
     'OCR后端': OCR_BACKEND_AUTO,
 }, config_type={
@@ -135,7 +141,7 @@ config = {
     'debug': False,  # Optional, default: False
     'use_gui': True, # 目前只支持True
     'config_folder': 'configs', #最好不要修改
-    'global_configs': [key_config_option, upload_config_option, ocr_backend_option],
+    'global_configs': [key_config_option, upload_config_option, page_debug_option, ocr_backend_option],
     'screenshot_processor': make_bottom_right_black, # 在截图的时候对frame进行修改, 可选
     'gui_icon': 'icons/icon.png', #窗口图标, 最好不需要修改文件名
     'wait_until_before_delay': 0,
