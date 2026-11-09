@@ -59,8 +59,146 @@ def handle_memory_process(task: TriggerTask):
     return True
 
 
+# 相对特征中心。全屏 OCR 会漏掉按钮上的浅灰小字，只对这一条重新识别。
+_MEMORY_SEARCH_Y_OFFSETS = (0.50, 0.62)
+_MEMORY_SEARCH_DIAGNOSTIC_REGION = (0.10, 0.70, 0.90, 0.95)
+
+
+def _relative_center(task, box):
+    return (
+        (box.x + box.width / 2) / task.width,
+        (box.y + box.height / 2) / task.height,
+    )
+
+
+def _memory_feature_center(task, card):
+    return _relative_center(task, card["feature_box"])
+
+
+def _is_engraved_memory_card(card):
+    """三列铭刻记忆的名称不固定，名称里出现「记忆：」即视为其中一列。"""
+    name = card.get("name", "").replace(" ", "").replace("\u3000", "")
+    return "记忆：" in name or "记忆:" in name
+
+
+def _real_memory_select_cards(cards):
+    """只保留名称匹配「记忆：」的卡牌，描述区误检不参与选择和刷新。"""
+    return [card for card in cards if _is_engraved_memory_card(card)]
+
+
+def _memory_search_columns(task, cards):
+    """按上方每张卡的横向中线划分重新搜索区域。"""
+    real_cards = sorted(
+        _real_memory_select_cards(cards),
+        key=lambda card: _memory_feature_center(task, card)[0],
+    )
+    if not real_cards:
+        return []
+    centers = [_memory_feature_center(task, card)[0] for card in real_cards]
+    columns = []
+    for index, card in enumerate(real_cards):
+        center_x, center_y = _memory_feature_center(task, card)
+        if len(centers) == 1:
+            x1 = center_x - 0.12
+            x2 = center_x + 0.12
+        else:
+            if index == 0:
+                x1 = center_x - (centers[1] - center_x) / 2
+            else:
+                x1 = (centers[index - 1] + center_x) / 2
+            if index == len(centers) - 1:
+                x2 = center_x + (center_x - centers[index - 1]) / 2
+            else:
+                x2 = (center_x + centers[index + 1]) / 2
+        columns.append({
+            "card": card,
+            "region": (
+                max(0.0, x1),
+                max(0.0, center_y + _MEMORY_SEARCH_Y_OFFSETS[0]),
+                min(1.0, x2),
+                min(1.0, center_y + _MEMORY_SEARCH_Y_OFFSETS[1]),
+            ),
+        })
+    return columns
+
+
+def _ocr_memory_search_boxes(task, region):
+    """对单列按钮区域重新 OCR。全屏结果里没有这行低对比度文字。"""
+    boxes = task.ocr(region[0], region[1], region[2], region[3]) or []
+    return _simplify_texts(list(boxes))
+
+
+def _boxes_in_region(task, region):
+    x1, y1, x2, y2 = region
+    matched = []
+    for box in task.all_texts:
+        if not getattr(box, "name", "").strip():
+            continue
+        center_x, center_y = _relative_center(task, box)
+        if x1 <= center_x <= x2 and y1 <= center_y <= y2:
+            matched.append(box)
+    return matched
+
+
+def _format_ocr_boxes(task, boxes):
+    parts = []
+    for box in sorted(boxes, key=lambda item: _relative_center(task, item)):
+        center_x, center_y = _relative_center(task, box)
+        parts.append(f"「{box.name.strip()}」(中心={center_x:.4f},{center_y:.4f})")
+    return "，".join(parts) if parts else "无"
+
+
+def _shortest_text_span(boxes, text):
+    """找出横向拼起来包含目标文字的最短连续 OCR 框。"""
+    ordered = sorted(boxes, key=lambda box: (box.x + box.width / 2, box.y))
+    best = None
+    for start in range(len(ordered)):
+        joined = ""
+        for end in range(start, len(ordered)):
+            joined += ordered[end].name.strip()
+            if text in joined:
+                span = ordered[start:end + 1]
+                if best is None or len(span) < len(best):
+                    best = span
+                break
+    return best or []
+
+
+def _span_center(task, boxes):
+    centers = [_relative_center(task, box) for box in boxes]
+    return (
+        sum(item[0] for item in centers) / len(centers),
+        sum(item[1] for item in centers) / len(centers),
+    )
+
+
+def _memory_search_remaining(text):
+    match = re.search(r"(\d+)\s*[/／]\s*(\d+)", text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _choose_random_memory_card(task, cards):
+    real_cards = _real_memory_select_cards(cards)
+    fake_names = "、".join(
+        f"「{card['name']}」"
+        for card in cards
+        if card not in real_cards
+    )
+    if fake_names:
+        task.log_info(f"记忆卡牌选择页面：描述区误检不参与随机选择：{fake_names}")
+    if not real_cards:
+        task.log_info("记忆卡牌选择页面：没有可随机选择的卡牌")
+        return
+    card = random.choice(real_cards)
+    task.log_info(f"未命中目标且无法继续刷新，随机选择「{card['name']}」")
+    _move_and_click(task, card["x"], card["y"])
+    task.sleep(1)
+
+
 def handle_memory_card_select(task: TriggerTask):
-    """记忆卡牌选择页面：优先目标卡牌，其次指定记忆，否则刷新可搜索的卡牌。"""
+    """记忆卡牌选择页面：优先目标卡牌，其次指定记忆，否则按卡牌列刷新。"""
     title = _get_region_text(task, (0.341, 0.011, 0.670, 0.171))
     if "选择铭刻的记忆" not in title:
         return False
@@ -77,61 +215,75 @@ def handle_memory_card_select(task: TriggerTask):
         return True
 
     specified_memory = _get_config_value(task, "指定记忆卡牌", "")
+    selectable_cards = _real_memory_select_cards(cards)
     if specified_memory:
-        for card in cards:
+        for card in selectable_cards:
             if is_subsequence(specified_memory, card["name"] + "：:" + card["description"]):
                 task.log_info(f"记忆卡牌选择页面：命中指定记忆卡牌「{card['name']}」")
                 _move_and_click(task, card["x"], card["y"])
                 task.sleep(1)
                 return True
 
-    search_boxes = []
-    count_boxes = []
-    for box in task.all_texts:
-        x = (box.x + box.width / 2) / task.width
-        y = (box.y + box.height / 2) / task.height
-        if not (0.109 <= x <= 0.880 and 0.779 <= y <= 0.874):
-            continue
-        if "重新搜索" in box.name:
-            search_boxes.append(box)
-        match = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", box.name)
-        if match:
-            count_boxes.append((box, int(match.group(1))))
+    refresh_text = _get_game_text(task, "重新搜索")
+    task.log_info(
+        "记忆卡牌选择页面：底部候选文本="
+        + _format_ocr_boxes(task, _boxes_in_region(task, _MEMORY_SEARCH_DIAGNOSTIC_REGION))
+    )
+    columns = _memory_search_columns(task, cards)
+    if not columns:
+        task.log_info("记忆卡牌选择页面：未找到上方卡牌行，无法按列定位重新搜索")
+        _choose_random_memory_card(task, cards)
+        return True
 
-    refreshed = False
-    for count_box, remaining in sorted(count_boxes, key=lambda item: item[0].x)[:3]:
-        count_x = count_box.x + count_box.width / 2
-        count_y = count_box.y + count_box.height / 2
-        candidates = [
-            box for box in search_boxes
-            if box.x + box.width / 2 < count_x
-            and abs(box.y + box.height / 2 - count_y) <= 0.04 * task.height
-        ]
-        if not candidates:
-            continue
-        search_box = min(
-            candidates,
-            key=lambda box: (box.x + box.width / 2 - count_x) ** 2
-            + (box.y + box.height / 2 - count_y) ** 2,
+    exhausted = False
+    missing_count = False
+    for column in columns:
+        region = column["region"]
+        boxes = _ocr_memory_search_boxes(task, region)
+        joined = "".join(
+            box.name.strip()
+            for box in sorted(boxes, key=lambda item: item.x)
         )
-        search_boxes.remove(search_box)
+        card_name = column["card"]["name"]
+        task.log_info(
+            f"记忆卡牌选择页面：卡牌「{card_name}」搜索区域="
+            f"({region[0]:.4f}, {region[1]:.4f}, {region[2]:.4f}, {region[3]:.4f})，"
+            f"区域文本=「{joined}」"
+        )
+        if refresh_text not in joined:
+            task.log_info(f"记忆卡牌选择页面：卡牌「{card_name}」列内未识别到重新搜索")
+            continue
+        remaining = _memory_search_remaining(joined)
+        if remaining is None:
+            missing_count = True
+            task.log_info(
+                f"记忆卡牌选择页面：卡牌「{card_name}」"
+                "已识别到重新搜索，但未识别到剩余次数"
+            )
+            continue
         if remaining == 0:
+            exhausted = True
+            task.log_info(
+                f"记忆卡牌选择页面：卡牌「{card_name}」剩余搜索次数=0，跳过重新搜索"
+            )
             continue
+        span = _shortest_text_span(boxes, refresh_text)
+        if not span:
+            missing_count = True
+            continue
+        click_x, click_y = _span_center(task, span)
         task.log_info(f"记忆卡牌选择页面：剩余搜索次数={remaining}，点击重新搜索")
-        _move_and_click(
-            task,
-            (search_box.x + search_box.width / 2) / task.width,
-            (search_box.y + search_box.height / 2) / task.height,
-        )
+        _move_and_click(task, click_x, click_y)
         task.sleep(1)
-        refreshed = True
-    if not refreshed:
-        task.log_info("记忆卡牌选择页面：未命中目标，且未找到可用的重新搜索按钮")
-        if cards:
-            card = random.choice(cards)
-            task.log_info(f"未命中目标且无法继续刷新，随机选择「{card['name']}」")
-            _move_and_click(task, card["x"], card["y"])
-            task.sleep(1)
+        return True
+
+    if exhausted:
+        task.log_info("记忆卡牌选择页面：重新搜索次数已用完")
+    elif missing_count:
+        task.log_info("记忆卡牌选择页面：已识别到重新搜索，但未识别到剩余次数")
+    else:
+        task.log_info("记忆卡牌选择页面：未识别到重新搜索按钮")
+    _choose_random_memory_card(task, cards)
     return True
 
 
