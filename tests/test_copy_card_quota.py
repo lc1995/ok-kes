@@ -72,7 +72,7 @@ class TestCopyCardQuota(unittest.TestCase):
             mode.default_config["复制卡牌列表"],
             ["展开极光*1", "剑雨*1", "缕光芒*1", "一缕光芒*1", "万众英雄*1"],
         )
-        self.assertIn("达到次数后才复制下一张", mode.config_description["复制卡牌列表"])
+        self.assertIn("当前画面没有这张卡时", mode.config_description["复制卡牌列表"])
         self.assertIn("不复制其他卡牌", mode.config_description["复制卡牌列表"])
         self.assertIn("只写卡牌名时无限复制", mode.config_description["复制卡牌列表"])
 
@@ -108,8 +108,14 @@ class TestCopyCardQuota(unittest.TestCase):
         self.click.assert_called_once_with(self.task, 0.7, 0.4)
         self.assertEqual(self.task.node_status["pending_copy_names"], ["卡牌B"])
 
-    def test_missing_current_card_does_not_copy_later_cards(self):
-        self.assertTrue(self._select([_card("卡牌B")]))
+    def test_missing_current_card_copies_the_next_visible_card(self):
+        self.assertTrue(self._select([_card("卡牌B", 0.7)]))
+        self.click.assert_called_once_with(self.task, 0.7, 0.4)
+        self.assertEqual(self.task.node_status["pending_copy_names"], ["卡牌B"])
+        self.task.click_box.assert_not_called()
+
+    def test_missing_every_listed_card_skips(self):
+        self.assertTrue(self._select([_card("其他卡")]))
         self.click.assert_not_called()
         self.task.click_box.assert_called_once()
         self.assertEqual(self.task.node_status["pending_copy_names"], [])
@@ -165,11 +171,22 @@ class TestCopyCardQuota(unittest.TestCase):
         self.assertEqual(self.task.node_status["copied_card_counts"]["卡牌A"], 1)
         self.task.click_box.assert_not_called()
 
-    def test_choice_page_skips_when_current_card_is_absent(self):
+    def test_choice_page_copies_later_card_when_earlier_card_is_absent(self):
         prompt = SimpleNamespace(name="请选择要复制的卡牌", x=400, y=100, width=200, height=40)
         self.task.all_texts = [self._skip_button()]
         with patch.object(utils, "find_box_at_point", return_value=prompt), patch.object(
-            utils, "recognize_cards", return_value=[_card("卡牌B")]
+            utils, "recognize_cards", return_value=[_card("卡牌B", 0.7)]
+        ):
+            self.assertTrue(utils.handle_copy_card_choice(self.task))
+        self.click.assert_called_once_with(self.task, 0.7, 0.4)
+        self.assertEqual(self.task.node_status["copied_card_counts"]["卡牌B"], 1)
+        self.task.click_box.assert_not_called()
+
+    def test_choice_page_skips_when_no_listed_card_is_visible(self):
+        prompt = SimpleNamespace(name="请选择要复制的卡牌", x=400, y=100, width=200, height=40)
+        self.task.all_texts = [self._skip_button()]
+        with patch.object(utils, "find_box_at_point", return_value=prompt), patch.object(
+            utils, "recognize_cards", return_value=[_card("其他卡")]
         ):
             self.assertTrue(utils.handle_copy_card_choice(self.task))
         self.click.assert_not_called()

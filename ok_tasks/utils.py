@@ -2936,22 +2936,22 @@ def _active_copy_target(quotas, node_status):
 
 
 def _next_copy_choice(quotas, node_status, cards):
-    """只在当前目标卡牌里选择。目标不在场上时不改选后面的卡牌。"""
-    name, total = _active_copy_target(quotas, node_status)
-    left = _copy_quota_left(node_status, name, total) if name else 0
-    if not name or (left is not None and left <= 0):
-        return None, None
-    card = next(
-        (
-            item for item in cards
-            if not item.get("selected")
-            and _copy_name_matches(name, item.get("name", ""))
-        ),
-        None,
-    )
-    if card is None:
-        return None, None
-    return name, card
+    """按列表顺序选择第一张仍有次数、并且出现在当前卡牌中的卡。"""
+    for name, total in quotas:
+        left = _copy_quota_left(node_status, name, total)
+        if left is not None and left <= 0:
+            continue
+        card = next(
+            (
+                item for item in cards
+                if not item.get("selected")
+                and _copy_name_matches(name, item.get("name", ""))
+            ),
+            None,
+        )
+        if card is not None:
+            return name, card
+    return None, None
 
 
 def _record_copied_cards(task: TriggerTask, names):
@@ -3016,28 +3016,45 @@ def _select_chaos_copy_cards(task: TriggerTask, count=1):
         task.log_info(f"{page}: 已选好待复制卡牌{pending}，等待点击复制")
         return True
 
-    target_name, target_total = _active_copy_target(quotas, node_status)
-    if not target_name:
-        task.log_info(f"{page}: 复制次数已达到，不再复制")
-        return _click_copy_skip(task, page)
-    copied_count = node_status["copied_card_counts"].get(target_name, 0)
-    remaining = count if target_total is None else target_total - copied_count
-    if remaining < count:
-        task.log_info(
-            f"{page}: 「{target_name}」还可复制{remaining}次，"
-            f"不足本次{count}张，不再复制其他卡牌"
-        )
+    def quota_left(name, total):
+        return _copy_quota_left(node_status, name, total)
+
+    targets = []
+    has_partial_quota = False
+    for name, total in quotas:
+        left = quota_left(name, total)
+        if left is None or left >= count:
+            targets.append((name, total))
+        elif left > 0:
+            has_partial_quota = True
+    if not targets:
+        if has_partial_quota:
+            task.log_info(
+                f"{page}: 剩余次数不足本次{count}张，不再复制其他卡牌"
+            )
+        else:
+            task.log_info(f"{page}: 复制次数已达到，不再复制")
         return _click_copy_skip(task, page)
 
-    def click_quota_cards(cards):
-        clicked = False
+    def refresh_cards():
+        task.all_texts = _simplify_texts(task.ocr())
+        return recognize_cards_in_deck(task, page=page)
+
+    def click_named_cards(name, total, cards):
         while len(node_status["pending_copy_names"]) < count:
-            name, card = _next_copy_choice(
-                quotas, node_status, cards
+            left = quota_left(name, total)
+            if left is not None and left <= 0:
+                break
+            card = next(
+                (
+                    item for item in cards
+                    if not item.get("selected")
+                    and _copy_name_matches(name, item.get("name", ""))
+                ),
+                None,
             )
             if card is None:
                 break
-            left = _copy_quota_left(node_status, name, dict(quotas)[name])
             left_text = "无限次" if left is None else f"{left}次"
             task.log_info(
                 f"{page}: 复制「{card['name']}」(匹配「{name}」，"
@@ -3047,12 +3064,29 @@ def _select_chaos_copy_cards(task: TriggerTask, count=1):
             task.sleep(0.3)
             card["selected"] = True
             node_status["pending_copy_names"].append(name)
-            clicked = True
-        return clicked
 
-    def refresh_cards():
-        task.all_texts = _simplify_texts(task.ocr())
-        return recognize_cards_in_deck(task, page=page)
+    def search_named_cards(name, total, cards, single_page):
+        down_scrolls = 0
+        max_scrolls = 20
+        while True:
+            click_named_cards(name, total, cards)
+            if len(node_status["pending_copy_names"]) >= count:
+                task.log_info(
+                    f"{page}: 已选择{node_status['pending_copy_names']}，等待复制"
+                )
+                return True
+            if single_page:
+                task.log_info(f"{page}: 当前仅一页卡牌，不执行向下滚动")
+                return False
+            if _point_is_white(task, 0.982, 0.846, page):
+                task.log_info(f"{page}: 检测到已到达卡牌底部")
+                return False
+            if down_scrolls >= max_scrolls:
+                task.log_info(f"{page}: 向下滚动已达到{max_scrolls}次限制")
+                return False
+            _scroll_card_page(task, 0.251, 0.735, -3, page)
+            down_scrolls += 1
+            cards = refresh_cards()
 
     cards = refresh_cards()
     scrollbar_white_ratio = region_white_ratio(
@@ -3063,34 +3097,35 @@ def _select_chaos_copy_cards(task: TriggerTask, count=1):
         f"{page}: 滚动条区域白色像素占比={scrollbar_white_ratio:.2%}，"
         f"是否仅一页卡牌={single_page}"
     )
-    down_scrolls = 0
-    max_scrolls = 20
-    while True:
-        click_quota_cards(cards)
-        if len(node_status["pending_copy_names"]) >= count:
-            task.log_info(
-                f"{page}: 已选择{node_status['pending_copy_names']}，等待复制"
-            )
+    for index, (name, total) in enumerate(targets):
+        if index:
+            node_status["pending_copy_names"] = []
+            if not single_page:
+                _scroll_copy_deck_to_top(task, page)
+            cards = refresh_cards()
+        if search_named_cards(name, total, cards, single_page):
             return True
-        if single_page:
-            task.log_info(f"{page}: 当前仅一页卡牌，不执行向下滚动")
-            break
-        if _point_is_white(task, 0.982, 0.846, page):
-            task.log_info(f"{page}: 检测到已到达卡牌底部")
-            break
-        if down_scrolls >= max_scrolls:
-            task.log_info(f"{page}: 向下滚动已达到{max_scrolls}次限制")
-            break
-        _scroll_card_page(task, 0.251, 0.735, -3, page)
-        down_scrolls += 1
-        cards = refresh_cards()
+        task.log_info(f"{page}: 找不到「{name}」，继续查找下一张")
 
-    task.log_info(f"{page}: 找不到「{target_name}」，不再复制")
+    task.log_info(f"{page}: 列表中的卡牌都找不到，不再复制")
     return _click_copy_skip(task, page)
 
 
+def _scroll_copy_deck_to_top(task: TriggerTask, page):
+    """翻回牌库顶部，便于查找下一张复制目标。"""
+    up_scrolls = 0
+    max_scrolls = 20
+    while up_scrolls < max_scrolls:
+        if _point_is_white(task, 0.982, 0.128, page):
+            task.log_info(f"{page}: 检测到已到达卡牌顶部")
+            return
+        _scroll_card_page(task, 0.252, 0.179, 3, page)
+        up_scrolls += 1
+    task.log_info(f"{page}: 向上滚动已达到{max_scrolls}次限制")
+
+
 def _choose_chaos_copy_card(task: TriggerTask, cards):
-    """卡厄思复制选择页：点第一张仍有次数的卡，否则跳过。"""
+    """卡厄思复制选择页：按列表顺序点第一张仍有次数且在场上的卡。"""
     page = "卡厄思复制卡牌选择"
     node_status = getattr(task, "node_status", None)
     if not isinstance(node_status, dict):
@@ -3102,7 +3137,7 @@ def _choose_chaos_copy_card(task: TriggerTask, cards):
     if card is None:
         target_name, _target_total = _active_copy_target(quotas, node_status)
         if target_name:
-            task.log_info(f"{page}: 找不到「{target_name}」，不再复制")
+            task.log_info(f"{page}: 列表中的卡牌都找不到，不再复制")
         else:
             task.log_info(f"{page}: 复制次数已达到，不再复制")
         return _click_copy_skip(task, page)
