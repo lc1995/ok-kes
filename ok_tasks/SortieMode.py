@@ -39,6 +39,7 @@ class SortieMode(TriggerTask):
         self.default_config["装备1号位优先级"] = ["蚀化臂铠"]
         self.default_config["装备2号位优先级"] = ["拷问工具箱"]
         self.default_config["装备3号位优先级"] = ["异象石碑"]
+        self.default_config["得到指定装备后暂停"] = ""
         self.default_config["只打第一层"] = True
         self.default_config["进入商店"] = False
         self.default_config["商店刷新信用点阈值"] = 300
@@ -82,6 +83,10 @@ class SortieMode(TriggerTask):
             '第几层boss前自动暂停': {'type': 'drop_down', 'options': ['不暂停', '1', '2', '3']},
         }
         self.config_description['游戏语言'] = "国际服请设置为繁体中文"
+        self.config_description["得到指定装备后暂停"] = (
+            "填写装备名称后，安装或购买到该装备时暂停并提醒。留空则不暂停。"
+            "无需完整名称，填写能区分的关键字即可。被提炼或取消购买时不会暂停。"
+        )
         self.config_description['商店刷新信用点阈值'] = (
             "德朗商店免费刷新次数用完后，仅当信用点大于该值且足够支付刷新价格时才付费刷新。"
         )

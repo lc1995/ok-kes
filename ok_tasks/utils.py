@@ -1730,6 +1730,11 @@ def handle_stuck_log(task: TriggerTask):
     from utils_sortie import handle_secret_enemy
     handle_secret_enemy(task)
     cards = recognize_cards(task, page="画面卡住兜底")
+    if (
+        getattr(task, "name", "") == "自动卡厄思模式"
+        and _is_view_original_page(task)
+    ):
+        cards = _without_blacklisted_flashes(task, cards)
     if cards:
         chosen_card = random.choice(cards)
         task.log_info(
@@ -1808,6 +1813,14 @@ def log_node_status(task: TriggerTask):
         )
         task.info_set("本局已移除卡牌", ns.get("removed_card_count", 0))
         task.info_set("本局已获得中立牌", ns.get("neutral_card_count", 0))
+        copied_cards = ns.get("copied_card_counts") or {}
+        if getattr(task, "name", "") == "自动卡厄思模式" or copied_cards:
+            task.info_set(
+                "本局已复制卡牌",
+                "，".join(
+                    f"{name}×{count}" for name, count in copied_cards.items()
+                ) or "无",
+            )
         equipment = _equipment_state(task)
         equipment_names = [
             _current_equipment_for_slot(task, equipment, slot)[0]
@@ -2474,6 +2487,26 @@ def _refine_equipment(task: TriggerTask):
     return True
 
 
+def _pause_after_specified_equipment(task: TriggerTask, equipment):
+    """安装或购买到玩家填写的装备后暂停。未填写或未命中时返回 False。"""
+    target = _get_config_value(task, "得到指定装备后暂停", "")
+    if not isinstance(target, str) or not target:
+        return False
+    names = [equipment.get("name"), equipment.get("ocr_name")]
+    if not any(name and (name in target or target in name) for name in names):
+        return False
+    display_name = equipment.get("ocr_name") or equipment.get("name") or target
+    try:
+        task.log_warning(
+            f"已获得指定装备「{display_name}」，工具已暂停，请手动接管。",
+            notify=True,
+            screenshot=True,
+        )
+    finally:
+        task.executor.pause()
+    return True
+
+
 def handle_equipment(task: TriggerTask):
     """装备选择/安装界面: 按装备位优先级选择，并维护目标主战员的装备状态。"""
     title = find_box_at_point(task, 0.499, 0.126)
@@ -2645,8 +2678,9 @@ def handle_equipment(task: TriggerTask):
                 )
                 task.click_box(purchase_box)
                 task.sleep(1)
+            if _pause_after_specified_equipment(task, new_equipment):
                 return True
-            return False
+            return is_purchase_page
 
         other_members = [
             level_box for index, level_box in enumerate(lv_texts)
@@ -2671,8 +2705,9 @@ def handle_equipment(task: TriggerTask):
                 )
                 task.click_box(purchase_box)
                 task.sleep(1)
+            if _pause_after_specified_equipment(task, new_equipment):
                 return True
-            return False
+            return is_purchase_page
 
         if is_purchase_page:
             task.log_info(f"购买装备未满足分配条件，原因={install_reason}，点击「取消」")
@@ -2831,6 +2866,253 @@ def _scroll_to_target_member_for_card_removal(task: TriggerTask):
         scroll_count += 1
 
 
+_COPY_COUNT_PATTERN = re.compile(
+    r"^(?P<name>.+?)(?:\s*[*x×＊]\s*|\s+)(?P<count>\d+)\s*张?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_copy_card_entry(entry):
+    """解析“卡牌名*次数”。未写次数时不限次数，次数为 0 时忽略。"""
+    if not isinstance(entry, str):
+        return None
+    text = entry.strip()
+    if not text:
+        return None
+    matched = _COPY_COUNT_PATTERN.match(text)
+    if not matched:
+        return text, None
+    name = matched.group("name").strip()
+    count = int(matched.group("count"))
+    if not name or count <= 0:
+        return None
+    return name, count
+
+
+def _copy_card_quotas(task: TriggerTask):
+    """读取卡厄思复制卡牌列表，合并同名次数并保留先后顺序。"""
+    quotas = []
+    index = {}
+    for entry in _get_card_list(task, "复制卡牌列表"):
+        parsed = _parse_copy_card_entry(entry)
+        if not parsed:
+            continue
+        name, count = parsed
+        if name in index:
+            previous = quotas[index[name]][1]
+            merged = None if previous is None or count is None else previous + count
+            quotas[index[name]] = (name, merged)
+        else:
+            index[name] = len(quotas)
+            quotas.append((name, count))
+    return quotas
+
+
+def _copy_name_matches(target, card_name):
+    """卡牌名与配置关键字双向包含即视为同一张卡。"""
+    target = target.strip() if isinstance(target, str) else ""
+    card_name = card_name.strip() if isinstance(card_name, str) else ""
+    if not target or not card_name:
+        return False
+    return target in card_name or card_name in target
+
+
+def _copy_quota_left(node_status, name, total):
+    """扣除本局已复制和当前待确认的次数。不限次数时返回 None。"""
+    if total is None:
+        return None
+    used = (node_status.get("copied_card_counts") or {}).get(name, 0)
+    waiting = (node_status.get("pending_copy_names") or []).count(name)
+    return max(0, total - used - waiting)
+
+
+def _active_copy_target(quotas, node_status):
+    """返回列表中第一张还没达到复制次数的卡。次数满了才轮到下一张。"""
+    copied = node_status.get("copied_card_counts") or {}
+    for name, total in quotas:
+        if total is None or copied.get(name, 0) < total:
+            return name, total
+    return None, 0
+
+
+def _next_copy_choice(quotas, node_status, cards):
+    """只在当前目标卡牌里选择。目标不在场上时不改选后面的卡牌。"""
+    name, total = _active_copy_target(quotas, node_status)
+    left = _copy_quota_left(node_status, name, total) if name else 0
+    if not name or (left is not None and left <= 0):
+        return None, None
+    card = next(
+        (
+            item for item in cards
+            if not item.get("selected")
+            and _copy_name_matches(name, item.get("name", ""))
+        ),
+        None,
+    )
+    if card is None:
+        return None, None
+    return name, card
+
+
+def _record_copied_cards(task: TriggerTask, names):
+    """把已确认的复制计入本局次数。"""
+    node_status = getattr(task, "node_status", None)
+    if not isinstance(node_status, dict) or not names:
+        return
+    counts = node_status.setdefault("copied_card_counts", {})
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+        task.log_info(f"本局「{name}」已复制{counts[name]}次")
+
+
+def _copy_button_is_active(task: TriggerTask):
+    """复制按钮可见时返回是否可点击，不可见时返回 None。"""
+    box = find_box_at_point(task, 0.945, 0.918)
+    if not (box and _clean_match(box.name, "复制")):
+        return None
+    return is_button_active(task, box)
+
+
+def _click_copy_skip(task: TriggerTask, page):
+    """放弃本次复制，不保留待确认次数。"""
+    node_status = getattr(task, "node_status", None)
+    if isinstance(node_status, dict):
+        node_status["pending_copy_names"] = []
+    x1, y1, x2, y2 = (0.420, 0.860, 1.000, 1.000)
+    button = next(
+        (
+            box for name in ("跳过", "取消")
+            for box in task.all_texts
+            if name in box.name
+            and x1 <= (box.x + box.width / 2) / task.width <= x2
+            and y1 <= (box.y + box.height / 2) / task.height <= y2
+        ),
+        None,
+    )
+    if button:
+        task.log_info(f"{page}: 点击「{button.name}」")
+        task.click_box(button)
+        task.sleep(0.5)
+        return True
+    task.log_info(f"{page}: 未找到跳过或取消按钮")
+    return False
+
+
+def _select_chaos_copy_cards(task: TriggerTask, count=1):
+    """卡厄思牌库复制：按剩余次数选牌，选不满或无法复制时跳过。"""
+    page = "卡厄思复制卡牌"
+    count = max(1, int(count or 1))
+    node_status = getattr(task, "node_status", None)
+    if not isinstance(node_status, dict):
+        return False
+    node_status.setdefault("copied_card_counts", {})
+    node_status.setdefault("pending_copy_names", [])
+    quotas = _copy_card_quotas(task)
+    pending = node_status["pending_copy_names"]
+    if len(pending) >= count:
+        if _copy_button_is_active(task) is False:
+            task.log_info(f"{page}: 已选卡牌无法复制，取消本次复制")
+            return _click_copy_skip(task, page)
+        task.log_info(f"{page}: 已选好待复制卡牌{pending}，等待点击复制")
+        return True
+
+    target_name, target_total = _active_copy_target(quotas, node_status)
+    if not target_name:
+        task.log_info(f"{page}: 复制次数已达到，不再复制")
+        return _click_copy_skip(task, page)
+    copied_count = node_status["copied_card_counts"].get(target_name, 0)
+    remaining = count if target_total is None else target_total - copied_count
+    if remaining < count:
+        task.log_info(
+            f"{page}: 「{target_name}」还可复制{remaining}次，"
+            f"不足本次{count}张，不再复制其他卡牌"
+        )
+        return _click_copy_skip(task, page)
+
+    def click_quota_cards(cards):
+        clicked = False
+        while len(node_status["pending_copy_names"]) < count:
+            name, card = _next_copy_choice(
+                quotas, node_status, cards
+            )
+            if card is None:
+                break
+            left = _copy_quota_left(node_status, name, dict(quotas)[name])
+            left_text = "无限次" if left is None else f"{left}次"
+            task.log_info(
+                f"{page}: 复制「{card['name']}」(匹配「{name}」，"
+                f"本局还可复制{left_text})"
+            )
+            _move_and_click(task, card["x"], card["y"])
+            task.sleep(0.3)
+            card["selected"] = True
+            node_status["pending_copy_names"].append(name)
+            clicked = True
+        return clicked
+
+    def refresh_cards():
+        task.all_texts = _simplify_texts(task.ocr())
+        return recognize_cards_in_deck(task, page=page)
+
+    cards = refresh_cards()
+    scrollbar_white_ratio = region_white_ratio(
+        task, (0.976, 0.119, 0.988, 0.858)
+    )
+    single_page = scrollbar_white_ratio < 0.01
+    task.log_info(
+        f"{page}: 滚动条区域白色像素占比={scrollbar_white_ratio:.2%}，"
+        f"是否仅一页卡牌={single_page}"
+    )
+    down_scrolls = 0
+    max_scrolls = 20
+    while True:
+        click_quota_cards(cards)
+        if len(node_status["pending_copy_names"]) >= count:
+            task.log_info(
+                f"{page}: 已选择{node_status['pending_copy_names']}，等待复制"
+            )
+            return True
+        if single_page:
+            task.log_info(f"{page}: 当前仅一页卡牌，不执行向下滚动")
+            break
+        if _point_is_white(task, 0.982, 0.846, page):
+            task.log_info(f"{page}: 检测到已到达卡牌底部")
+            break
+        if down_scrolls >= max_scrolls:
+            task.log_info(f"{page}: 向下滚动已达到{max_scrolls}次限制")
+            break
+        _scroll_card_page(task, 0.251, 0.735, -3, page)
+        down_scrolls += 1
+        cards = refresh_cards()
+
+    task.log_info(f"{page}: 找不到「{target_name}」，不再复制")
+    return _click_copy_skip(task, page)
+
+
+def _choose_chaos_copy_card(task: TriggerTask, cards):
+    """卡厄思复制选择页：点第一张仍有次数的卡，否则跳过。"""
+    page = "卡厄思复制卡牌选择"
+    node_status = getattr(task, "node_status", None)
+    if not isinstance(node_status, dict):
+        return False
+    node_status.setdefault("copied_card_counts", {})
+    node_status.setdefault("pending_copy_names", [])
+    quotas = _copy_card_quotas(task)
+    name, card = _next_copy_choice(quotas, node_status, cards)
+    if card is None:
+        target_name, _target_total = _active_copy_target(quotas, node_status)
+        if target_name:
+            task.log_info(f"{page}: 找不到「{target_name}」，不再复制")
+        else:
+            task.log_info(f"{page}: 复制次数已达到，不再复制")
+        return _click_copy_skip(task, page)
+    task.log_info(f"{page}: 按剩余次数选择「{card['name']}」(匹配「{name}」)")
+    _move_and_click(task, card["x"], card["y"])
+    task.sleep(0.5)
+    _record_copied_cards(task, [name])
+    return True
+
+
 def handle_select_card(task: TriggerTask):
     """统一卡牌选择页面: 在(0.198,0.039)处检测文本，按移除/复制/闪光等关键字匹配配置并选择卡牌。"""
     box = find_box_at_point(task, 0.198, 0.039)
@@ -2858,6 +3140,9 @@ def handle_select_card(task: TriggerTask):
     ):
         _scroll_to_target_member_for_card_removal(task)
 
+    if action == "复制" and task.name == "自动卡厄思模式":
+        return _select_chaos_copy_cards(task, count)
+
     result = select_card(task, _get_card_list(task, config_key), count=count, action=action)
     if not result and action in ("闪光", "灵光"):
         skip_box = next(
@@ -2884,6 +3169,9 @@ def handle_copy_card_choice(task: TriggerTask):
         return False
 
     task.log_info("检测到复制卡牌选择页面")
+    if task.name == "自动卡厄思模式":
+        return _choose_chaos_copy_card(task, recognize_cards(task, page="复制卡牌选择页面"))
+
     target_boxes, target_click_positions = find_target_card(task)
     if target_boxes:
         click_position = target_click_positions[0]
@@ -3123,6 +3411,12 @@ def handle_copy(task: TriggerTask):
     if box and _clean_match(box.name, "复制"):
         if is_button_active(task, box):
             task.log_info("检测到复制操作，点击复制")
+            node_status = getattr(task, "node_status", None)
+            pending = []
+            if isinstance(node_status, dict):
+                pending = list(node_status.get("pending_copy_names") or [])
+                node_status["pending_copy_names"] = []
+            _record_copied_cards(task, pending)
             task.click_box(box)
             task.sleep(1)
             return True
@@ -4032,31 +4326,84 @@ def handle_shop(task: TriggerTask):
     return False
 
 
+def _flash_option_text(card):
+    """闪光选项的匹配文本，与闪光优先级使用同一拼接方式。"""
+    return card["name"] + "：:" + card["description"]
+
+
+def _flash_match_keywords(task, config_key):
+    """读取闪光关键字，并去掉空白。匹配方式与闪光优先级一致。"""
+    keywords = []
+    for keyword in _get_card_list(task, config_key):
+        if not isinstance(keyword, str):
+            continue
+        normalized_keyword = re.sub(r"\s+", "", keyword)
+        if normalized_keyword:
+            keywords.append(normalized_keyword)
+    return keywords
+
+
+def _is_view_original_page(task: TriggerTask):
+    """当前画面是否为卡牌闪光（查看原件 / 查看之前的闪光）选择页。"""
+    view_original = _get_game_text(task, "查看原件")
+    previous_flash = _get_game_text(task, "查看之前的闪光")
+
+    def matches(box):
+        return bool(
+            box and (view_original in box.name or previous_flash in box.name)
+        )
+
+    return matches(find_box_at_point(task, 0.890, 0.051)) or matches(
+        find_box_at_point(task, 0.896, 0.131)
+    )
+
+
+def _chaos_flash_blacklist(task):
+    """仅自动卡厄思模式启用闪光拉黑；其他模式保持原选择逻辑。"""
+    if getattr(task, "name", "") != "自动卡厄思模式":
+        return []
+    return _flash_match_keywords(task, "闪光拉黑列表")
+
+
+def _without_blacklisted_flashes(task, cards):
+    """去掉描述命中闪光拉黑列表的闪光选项。空列表不改变原列表。"""
+    blacklist = _chaos_flash_blacklist(task)
+    if not blacklist:
+        return cards
+    allowed = []
+    for card in cards:
+        text = _flash_option_text(card)
+        matched = next(
+            (
+                keyword for keyword in blacklist
+                if is_subsequence(keyword, text)
+            ),
+            None,
+        )
+        if matched:
+            task.log_info(
+                f"闪光「{card['name']}」命中闪光拉黑列表「{matched}」，不选择该闪光"
+            )
+            continue
+        allowed.append(card)
+    return allowed
+
+
 def handle_view_original(task: TriggerTask):
     """卡牌闪光（查看原件）事件: 按类型特征识别卡牌，并按闪光优先级选择。"""
-    box1 = find_box_at_point(task, 0.890, 0.051)
-    box2 = find_box_at_point(task, 0.896, 0.131)
-    if not ((box1 and (_get_game_text(task, '查看原件') in box1.name or _get_game_text(task, '查看之前的闪光') in box1.name)) or (box2 and (_get_game_text(task, '查看原件') in box2.name or _get_game_text(task, '查看之前的闪光') in box2.name))):
+    if not _is_view_original_page(task):
         return False
 
     cards = recognize_cards(task, page="卡牌闪光页面")
     if not cards:
         return False
 
-    flash_priority = []
-    for keyword in _get_card_list(task, '闪光优先级'):
-        if not isinstance(keyword, str):
-            continue
-        normalized_keyword = re.sub(r"\s+", "", keyword)
-        if normalized_keyword:
-            flash_priority.append(normalized_keyword)
+    flash_priority = _flash_match_keywords(task, "闪光优先级")
+    selectable_cards = _without_blacklisted_flashes(task, cards)
     chosen_card = None
     for desc_keyword in flash_priority:
-        for card in cards:
-            if is_subsequence(
-                desc_keyword,
-                card['name'] + "：:" + card['description'],
-            ):
+        for card in selectable_cards:
+            if is_subsequence(desc_keyword, _flash_option_text(card)):
                 chosen_card = card
                 task.log_info(f"优先选择「{card['name']}」({desc_keyword})")
                 if (
@@ -4066,8 +4413,6 @@ def handle_view_original(task: TriggerTask):
                 ):
                     task.node_status["get_specific_flash"] = True
                     task.log_info("已命中闪光优先级第一项，记录已获得特定闪光")
-                break
-            if chosen_card:
                 break
         if chosen_card:
             break
@@ -4093,7 +4438,10 @@ def handle_view_original(task: TriggerTask):
         return True
 
     if not chosen_card:
-        chosen_card = random.choice(cards)
+        if not selectable_cards:
+            task.log_info("可见闪光均被拉黑，不选择闪光")
+            return True
+        chosen_card = random.choice(selectable_cards)
         task.log_info(f"随机选择「{chosen_card['name']}」")
 
     _move_and_click(task, chosen_card['x'], chosen_card['y'])
@@ -4178,7 +4526,10 @@ def _initial_node_status():
             "node_count": 0, "enter_new_node": False, "node_type": "", "is_escaped": False,
             "save_target_member": False, "target_mask_card_position": -1,
             "get_specific_flash": False, "removed_card_count": 0,
-            "neutral_card_count": 0}
+            "neutral_card_count": 0, "octopus_seen": False,
+            "octopus_drop_checked": False, "octopus_drop_rejected": False,
+            "octopus_drop_matched": False, "octopus_seen_names": [],
+            "copied_card_counts": {}, "pending_copy_names": []}
 
 
 def _initial_member_status():
@@ -4277,7 +4628,8 @@ def reset_layer_status(task: TriggerTask):
                 'target_mask_card_position': ns.get('target_mask_card_position', -1),
                 'get_specific_flash': ns.get('get_specific_flash', False),
                 'removed_card_count': ns.get('removed_card_count', 0),
-                'neutral_card_count': ns.get('neutral_card_count', 0)}
+                'neutral_card_count': ns.get('neutral_card_count', 0),
+                'copied_card_counts': dict(ns.get('copied_card_counts') or {})}
         task.node_status = _initial_node_status()
         task.node_status['pass_final_boss_count'] = keep['pass_final_boss_count']
         task.node_status['total_rounds'] = keep['total_rounds']
@@ -4287,6 +4639,7 @@ def reset_layer_status(task: TriggerTask):
         task.node_status['get_specific_flash'] = keep['get_specific_flash']
         task.node_status['removed_card_count'] = keep['removed_card_count']
         task.node_status['neutral_card_count'] = keep['neutral_card_count']
+        task.node_status['copied_card_counts'] = keep['copied_card_counts']
 
 
 def handle_close_button(task: TriggerTask):

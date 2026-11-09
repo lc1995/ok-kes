@@ -505,9 +505,157 @@ def _octopus_handoff_finished(task: TriggerTask):
     ))
 
 
+def _octopus_equipment_target(task: TriggerTask):
+    """读取要刷的章鱼装备名称。留空表示不启用。"""
+    target = _get_config_value(task, "刷章鱼装备", "")
+    return target if isinstance(target, str) else ""
+
+
+def _text_matches_keyword(text, keyword):
+    """双向包含匹配装备名关键字。"""
+    return bool(text and keyword and (text in keyword or keyword in text))
+
+
+def _is_route_page(task: TriggerTask):
+    """是否为路线选择页面。与路线处理使用同一判定。"""
+    position_box = task.box_of_screen(0.335, 0.568, 0.453, 0.751)
+    position_feature = task.find_feature(feature_name="position", box=position_box)
+    cant_receive = find_box_at_point(task, 0.186, 0.850)
+    return bool(position_feature or (cant_receive and "无法接收到梦境号" in cant_receive.name))
+
+
+def _is_equipment_page(task: TriggerTask):
+    """装备奖励或安装页面。"""
+    title = find_box_at_point(task, 0.499, 0.126)
+    return bool(title and title.name == "装备")
+
+
+def _confirm_dialog_visible(task: TriggerTask):
+    """退出重开后的确认框。命中时交给现有确认按钮处理。"""
+    regions = (
+        (0.009, 0.168, 0.977, 0.875),
+        (0.267, 0.867, 0.991, 0.979),
+    )
+    return any(
+        _clean_match(box.name, "确认")
+        and region[0] <= (box.x + box.width / 2) / task.width <= region[2]
+        and region[1] <= (box.y + box.height / 2) / task.height <= region[3]
+        for region in regions
+        for box in task.all_texts
+    )
+
+
+def _clear_octopus_drop_state(status):
+    """本局章鱼掉落已处理完，避免后续关卡的装备被拿来重开。"""
+    status["octopus_seen"] = False
+    status["octopus_drop_checked"] = False
+    status["octopus_drop_rejected"] = False
+    status["octopus_drop_matched"] = False
+    status["octopus_seen_names"] = []
+
+
+def _remember_equipment_name(status, name):
+    """记下本关出现过的装备名，重复出现时不重复记录。"""
+    seen = status.setdefault("octopus_seen_names", [])
+    if not isinstance(seen, list):
+        seen = []
+        status["octopus_seen_names"] = seen
+    if name in seen:
+        return False
+    seen.append(name)
+    return True
+
+
+def _equipment_reward_names(task: TriggerTask):
+    """读取装备页上已经显示出来的装备名。信息不全时返回 None，调用方应等待。"""
+    equip_hint = find_box_at_point(task, 0.921, 0.135)
+    if equip_hint and _get_game_text(task, "请选择主战员") in equip_hint.name:
+        name = _get_region_text(task, (0.217, 0.379, 0.469, 0.436)).strip()
+        return [name] if name else None
+
+    slots = (
+        ((0.409, 0.219, 0.678, 0.276), (0.384, 0.275, 0.562, 0.319)),
+        ((0.410, 0.551, 0.699, 0.608), (0.384, 0.613, 0.573, 0.653)),
+    )
+    present = []
+    for name_region, type_region in slots:
+        name = _get_region_text(task, name_region).strip()
+        type_text = _get_region_text(task, type_region).strip()
+        if not name and not type_text:
+            continue
+        if not name:
+            return None
+        present.append(name)
+    return present or None
+
+
+def _in_battle(task: TriggerTask):
+    """战斗界面还在时，不能把路线特征误判成本关已经结束。"""
+    hand_count = find_box_at_point(task, 0.512, 0.969)
+    return bool(hand_count and re.search(r"\d+/10", hand_count.name))
+
+
+def _restart_for_octopus_equipment(task: TriggerTask, status):
+    """本关结束仍未命中指定装备时退出。确认框由后续页面处理点击。"""
+    target = _octopus_equipment_target(task)
+    shown = status.get("octopus_seen_names") or []
+    shown_text = "、".join(shown) if shown else "无"
+    task.log_info(
+        f"本关结束，装备「{shown_text}」均未命中「{target}」，点击ESC重新开始"
+    )
+    _move_and_click(task, 0.959, 0.053)
+    task.sleep(1)
+    status["octopus_drop_rejected"] = True
+    status["octopus_drop_checked"] = True
+    return True
+
+
+def _record_stage_equipment(task: TriggerTask, status, target):
+    """记下本关当前装备页上的名称。命中只做标记，不在这里重开。"""
+    names = _equipment_reward_names(task)
+    if not names:
+        return False
+    matched = any(_text_matches_keyword(name, target) for name in names)
+    new_names = [name for name in names if _remember_equipment_name(status, name)]
+    if matched and not status.get("octopus_drop_matched"):
+        status["octopus_drop_matched"] = True
+        task.log_info(f"本关装备命中指定章鱼装备「{target}」，候选={names}")
+    elif new_names:
+        task.log_info(f"本关装备未命中「{target}」，候选={names}，本关结束前继续核对")
+    return False
+
+
+def handle_octopus_equipment_drop(task: TriggerTask):
+    """刷指定章鱼装备：本关所有装备都比较，回到路线时仍未命中才重开。"""
+    target = _octopus_equipment_target(task)
+    status = getattr(task, "node_status", None)
+    if not target or not isinstance(status, dict):
+        return False
+    if status.get("octopus_drop_rejected"):
+        if _confirm_dialog_visible(task):
+            return False
+        if _is_equipment_page(task) or (_is_route_page(task) and not _in_battle(task)):
+            return True
+        _clear_octopus_drop_state(status)
+        return False
+    if not status.get("octopus_seen") or status.get("octopus_drop_checked"):
+        return False
+    if _is_equipment_page(task):
+        return _record_stage_equipment(task, status, target)
+    if _in_battle(task) or not _is_route_page(task):
+        return False
+    if status.get("octopus_drop_matched"):
+        task.log_info(f"本关已获得指定章鱼装备「{target}」，继续")
+        status["octopus_drop_checked"] = True
+        return False
+    return _restart_for_octopus_equipment(task, status)
+
+
 def handle_octopus_handoff(task: TriggerTask):
     """章鱼出现后交给玩家；全局恢复时确认已离开战斗再继续自动流程。"""
-    if not _get_config_value(task, "遇到章鱼暂停", False):
+    pause_enabled = bool(_get_config_value(task, "遇到章鱼暂停", False))
+    farm_target = _octopus_equipment_target(task)
+    if not pause_enabled and not farm_target:
         task._octopus_handoff = False
         return False
     match = match_octopus(task.frame)
@@ -517,6 +665,12 @@ def handle_octopus_handoff(task: TriggerTask):
         task._octopus_scan_log_time = now
         score = match.confidence if match else 0.0
         task.log_info(f"章鱼眼部检测：最高相似度={score:.4f}，阈值={OCTOPUS_THRESHOLD}")
+    if enemy and farm_target and isinstance(getattr(task, "node_status", None), dict):
+        if not task.node_status.get("octopus_seen"):
+            task.node_status["octopus_seen"] = True
+            task.log_info("本局已遇到章鱼，本关所有装备都会和指定名称比较，回到路线时仍未命中则重开")
+    if not pause_enabled:
+        return False
     pending = getattr(task, "_octopus_handoff", False)
     if not enemy and not pending:
         return False
@@ -1297,6 +1451,7 @@ def handle_chaos_reward_settlement(task: TriggerTask):
 
 # 卡厄思模式 PAGE_HANDLERS
 PAGE_HANDLERS = [
+    handle_octopus_equipment_drop, #刷指定章鱼装备，未命中时退出重开，优先于装备安装
     handle_auto_stop,
     handle_save_target_member,
     handle_route_selection,

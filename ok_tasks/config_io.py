@@ -311,56 +311,193 @@ def _apply_local_profile(task, profile):
     return _import_config_from_text(task, encoded)
 
 
+class LocalProfileSaveError(Exception):
+    """本地配置无法按玩家的选择保存。"""
+
+
+def _cloned_profile_store(all_profiles):
+    """复制方案库的顶层结构，避免新增或覆盖时改到调用方持有的对象。"""
+    if not isinstance(all_profiles, dict):
+        return {}
+    store = {}
+    for key, value in all_profiles.items():
+        store[key] = dict(value) if isinstance(value, dict) else value
+    return store
+
+
+def add_named_local_profile(all_profiles, mode, profile_name, snapshot):
+    """在指定模式的方案列表末尾追加一个新名称。
+
+    不修改传入的 all_profiles。名称为空或该模式已有同名方案时抛出 LocalProfileSaveError。
+    """
+    name = profile_name.strip() if isinstance(profile_name, str) else ""
+    if not name:
+        raise LocalProfileSaveError("配置名称不能为空。")
+    store = _cloned_profile_store(all_profiles)
+    mode_profiles = store.get(mode)
+    if not isinstance(mode_profiles, dict):
+        mode_profiles = {}
+    if name in mode_profiles:
+        raise LocalProfileSaveError(
+            f"本地配置“{name}”已存在。请覆盖该配置，或换一个名称。"
+        )
+    mode_profiles[name] = snapshot
+    store[mode] = mode_profiles
+    return store
+
+
+def overwrite_named_local_profile(all_profiles, mode, profile_name, snapshot):
+    """替换已有方案的设置，保留原名称和原有顺序。
+
+    不修改传入的 all_profiles。该模式中没有这个名称时抛出 LocalProfileSaveError，
+    也不会因此新建方案。
+    """
+    if not isinstance(profile_name, str) or not profile_name:
+        raise LocalProfileSaveError("要覆盖的本地配置不存在。")
+    store = _cloned_profile_store(all_profiles)
+    mode_profiles = store.get(mode)
+    if not isinstance(mode_profiles, dict) or profile_name not in mode_profiles:
+        raise LocalProfileSaveError(f"本地配置“{profile_name}”不存在，无法覆盖。")
+    store[mode] = {
+        key: snapshot if key == profile_name else value
+        for key, value in mode_profiles.items()
+    }
+    return store
+
+
 def make_save_local_config_callback(task, mode):
     """生成保存本地配置方案按钮的回调函数。"""
     def save_local_config():
-        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        from PySide6.QtWidgets import (
+            QDialog,
+            QHBoxLayout,
+            QInputDialog,
+            QLabel,
+            QListWidget,
+            QListWidgetItem,
+            QMessageBox,
+            QPushButton,
+            QVBoxLayout,
+        )
 
-        default_name = _default_local_profile_name(task, mode)
-        proposed_name = default_name
-        while True:
-            entered_name, accepted = QInputDialog.getText(
-                None,
-                "保存配置",
-                "请输入本地配置名称：",
-                text=proposed_name,
-            )
-            if not accepted:
-                return
-            profile_name = entered_name.strip() or default_name
+        dialog = QDialog()
+        dialog.setWindowTitle("保存配置")
+        dialog.resize(480, 360)
+        layout = QVBoxLayout(dialog)
+        hint_label = QLabel("选择已有配置覆盖，或新增一个配置。覆盖前会再次确认。")
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+        profile_list = QListWidget()
+        layout.addWidget(profile_list)
 
-            all_profiles = _read_local_profiles(task)
-            mode_profiles = all_profiles.get(mode)
-            if not isinstance(mode_profiles, dict):
-                mode_profiles = {}
+        button_layout = QHBoxLayout()
+        overwrite_button = QPushButton("覆盖所选配置")
+        add_button = QPushButton("新增配置")
+        cancel_button = QPushButton("取消")
+        overwrite_button.setEnabled(False)
+        button_layout.addStretch()
+        button_layout.addWidget(cancel_button)
+        button_layout.addWidget(overwrite_button)
+        button_layout.addWidget(add_button)
+        layout.addLayout(button_layout)
 
-            if profile_name in mode_profiles:
-                reply = QMessageBox.question(
-                    None,
-                    "配置名称重复",
-                    f"本地配置“{profile_name}”已存在。\n\n"
-                    "选择“是”覆盖原配置，选择“否”重新命名。",
-                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                    QMessageBox.No,
-                )
-                if reply == QMessageBox.Cancel:
-                    return
-                if reply == QMessageBox.No:
-                    proposed_name = profile_name
-                    continue
-
-            mode_profiles[profile_name] = _current_config_snapshot(task)
-            all_profiles[mode] = mode_profiles
-            if _write_local_profiles(task, all_profiles):
-                QMessageBox.information(
-                    None,
-                    "保存成功",
-                    f"当前配置已保存为“{profile_name}”。",
-                )
-                task.log_info(f"本地配置保存成功: {profile_name}")
+        def reload_profile_list():
+            profile_list.clear()
+            mode_profiles = _read_local_profiles(task).get(mode, {})
+            names = list(mode_profiles) if isinstance(mode_profiles, dict) else []
+            for profile_name in names:
+                profile_list.addItem(QListWidgetItem(profile_name))
+            if names:
+                hint_label.setText("选择已有配置覆盖，或新增一个配置。覆盖前会再次确认。")
             else:
-                QMessageBox.warning(None, "保存失败", "本地配置文件写入失败。")
-            return
+                hint_label.setText("当前没有已保存的本地配置，可以新增第一个配置。")
+
+        def selected_profile_name():
+            selected_items = profile_list.selectedItems()
+            return selected_items[0].text() if selected_items else ""
+
+        def update_button_state():
+            overwrite_button.setEnabled(bool(selected_profile_name()))
+
+        def persist_store(store, success_text, log_text):
+            if _write_local_profiles(task, store):
+                QMessageBox.information(dialog, "保存成功", success_text)
+                task.log_info(log_text)
+                dialog.accept()
+                return
+            QMessageBox.warning(dialog, "保存失败", "本地配置文件写入失败。")
+
+        def overwrite_selected_profile():
+            profile_name = selected_profile_name()
+            if not profile_name:
+                return
+            reply = QMessageBox.question(
+                dialog,
+                "确认覆盖",
+                f"确定用当前设置覆盖本地配置“{profile_name}”吗？\n\n"
+                "名称保持不变，原有设置会被替换。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            try:
+                store = overwrite_named_local_profile(
+                    _read_local_profiles(task),
+                    mode,
+                    profile_name,
+                    _current_config_snapshot(task),
+                )
+            except LocalProfileSaveError as exc:
+                QMessageBox.warning(dialog, "覆盖失败", str(exc))
+                reload_profile_list()
+                update_button_state()
+                return
+            persist_store(
+                store,
+                f"已用当前设置覆盖“{profile_name}”。",
+                f"本地配置已覆盖: {profile_name}",
+            )
+
+        def add_profile():
+            proposed_name = _default_local_profile_name(task, mode)
+            while True:
+                entered_name, accepted = QInputDialog.getText(
+                    dialog,
+                    "新增配置",
+                    "请输入新的本地配置名称：",
+                    text=proposed_name,
+                )
+                if not accepted:
+                    return
+                try:
+                    store = add_named_local_profile(
+                        _read_local_profiles(task),
+                        mode,
+                        entered_name,
+                        _current_config_snapshot(task),
+                    )
+                except LocalProfileSaveError as exc:
+                    QMessageBox.warning(dialog, "无法新增", str(exc))
+                    proposed_name = entered_name.strip() or proposed_name
+                    continue
+                profile_name = entered_name.strip()
+                persist_store(
+                    store,
+                    f"已新增本地配置“{profile_name}”。",
+                    f"本地配置已新增: {profile_name}",
+                )
+                return
+
+        profile_list.itemSelectionChanged.connect(update_button_state)
+        profile_list.itemDoubleClicked.connect(
+            lambda _item: overwrite_selected_profile()
+        )
+        overwrite_button.clicked.connect(overwrite_selected_profile)
+        add_button.clicked.connect(add_profile)
+        cancel_button.clicked.connect(dialog.reject)
+        reload_profile_list()
+        dialog.exec_()
 
     return save_local_config
 

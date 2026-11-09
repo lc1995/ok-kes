@@ -30,6 +30,7 @@ class ChaosMode(TriggerTask):
         self.default_config['配置操作'] = ""
         self.default_config['游戏语言'] = "简体中文"
         self.default_config['遇到章鱼暂停'] = True
+        self.default_config['刷章鱼装备'] = ""
         self.default_config['自动开启噩梦模式'] = True
         self._octopus_handoff = False
         self.default_config['刷存档主战员'] = "海德玛丽"
@@ -49,10 +50,11 @@ class ChaosMode(TriggerTask):
             "展开极光安息唯一",
             "展开极光200%",
         ]
+        self.default_config['闪光拉黑列表'] = []
         # 卡牌策略配置 (列表)
         self.default_config['移除卡牌列表'] = ["剑幕", "剑光", "水之伞", "海潮的庇护", "作战分析"]
         self.default_config['闪光卡牌列表'] = ["展开极光", "剑雨", "缕光芒", "一缕光芒", "万众英雄"]
-        self.default_config['复制卡牌列表'] = ["展开极光", "剑雨", "缕光芒", "一缕光芒", "万众英雄"]
+        self.default_config['复制卡牌列表'] = ["展开极光*1", "剑雨*1", "缕光芒*1", "一缕光芒*1", "万众英雄*1"]
         self.default_config['需要冥想的卡牌'] = ["剑雨", "展开极光"]
         self.default_config['多少信用点以上冥想'] = 300
         self.default_config['商店刷新信用点阈值'] = 300
@@ -60,6 +62,7 @@ class ChaosMode(TriggerTask):
         self.default_config['装备1号位优先级'] = ["蚀化臂铠"]
         self.default_config['装备2号位优先级'] = ["拷问工具箱"]
         self.default_config['装备3号位优先级'] = ["异象石碑"]
+        self.default_config['得到指定装备后暂停'] = ""
         self.default_config['卡牌奖励优先级'] = ["梦之边境"]
         self.default_config['指定记忆卡牌'] = ""
         self.default_config['首层刷特定闪光'] = False
@@ -85,7 +88,14 @@ class ChaosMode(TriggerTask):
                             "get_specific_flash": False,
                             "precision_memory_visited": False,
                             "removed_card_count": 0,
-                            "neutral_card_count": 0}
+                            "neutral_card_count": 0,
+                            "octopus_seen": False,
+                            "octopus_drop_checked": False,
+                            "octopus_drop_rejected": False,
+                            "octopus_drop_matched": False,
+                            "octopus_seen_names": [],
+                            "copied_card_counts": {},
+                            "pending_copy_names": []}
         self.member_status = {
             "equipment": {
                 "names": ["", "", ""],
@@ -116,6 +126,10 @@ class ChaosMode(TriggerTask):
             '存储数据保存上限大于多少': {'min': 0, 'max': 170},
         }
         self.config_description['游戏语言'] = "国际服请设置为繁体中文"
+        self.config_description['得到指定装备后暂停'] = (
+            "填写装备名称后，安装或购买到该装备时暂停并提醒。留空则不暂停。"
+            "无需完整名称，填写能区分的关键字即可。被提炼或取消购买时不会暂停。"
+        )
         self.config_description['装备选择策略'] = (
             "原有策略：优先给刷存档主战员升级，否则随机给队友。"
             "仅目标主战员列表装备：只安装对应装备位优先级列表内且符合原有替换规则的装备，"
@@ -126,8 +140,24 @@ class ChaosMode(TriggerTask):
             "识别到章鱼后检查并尝试关闭游戏自动战斗，暂停工具并提醒。"
             "手动打完后停在奖励、结算或路线页面，点击工具全局开始按钮继续。"
         )
+        self.config_description['刷章鱼装备'] = (
+            "填写目标装备名称，例如混沌之识。战胜章鱼的这一关里，每件装备都会和该名称比较；"
+            "回到路线时如果一件都没对上，就退出并重新开局。留空则不启用。"
+            "无需完整名称，关键字即可。与“遇到章鱼暂停”可同时使用。"
+        )
+        self.config_description['复制卡牌列表'] = (
+            "每项写成“卡牌名*次数”，例如展开极光*2、剑雨*1。"
+            "只复制当前还没达到次数的第一张，达到次数后才复制下一张。"
+            "这张卡当前找不到，或列表里的次数都已达到，就跳过，不复制其他卡牌。"
+            "只写卡牌名时无限复制。次数每局重新计算。"
+        )
         self.config_description['闪光优先级'] = (
             "卡牌名称和描述无需完整填写，输入几个关键字即可，但顺序须与游戏原文一致。"
+        )
+        self.config_description['闪光拉黑列表'] = (
+            "填写描述关键字。如果闪光选项出现该描述，则不选择这个闪光。"
+            "关键字写法和“闪光优先级”相同，按卡牌名加描述的原文顺序填写，部分关键字即可。"
+            "列表为空时不启用拉黑。"
         )
         self.config_description['刷初始卡牌'] = (
             "填写目标卡牌名称后反复刷新初始卡牌；不能与“刷空档”同时使用。"

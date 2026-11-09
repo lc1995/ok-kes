@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ok_tasks"))
 
 import utils
 from ChaosMode import ChaosMode
+from SortieMode import SortieMode
 
 
 def box(name, x=800, y=930):
@@ -67,6 +68,67 @@ class TestEquipmentStrategy(unittest.TestCase):
         self.assertEqual(mode.config_type["装备选择策略"], {
             "type": "drop_down", "options": ["原有策略", "仅目标主战员列表装备"],
         })
+
+    def test_pause_after_named_equipment_defaults_to_disabled(self):
+        description = (
+            "填写装备名称后，安装或购买到该装备时暂停并提醒。留空则不暂停。"
+            "无需完整名称，填写能区分的关键字即可。被提炼或取消购买时不会暂停。"
+        )
+        for mode_cls in (ChaosMode, SortieMode):
+            mode = mode_cls(executor=Mock(), app=Mock())
+            self.assertEqual(mode.default_config["得到指定装备后暂停"], "")
+            self.assertEqual(mode.config_description["得到指定装备后暂停"], description)
+
+    def test_installing_specified_equipment_pauses(self):
+        self.task.config["得到指定装备后暂停"] = "目标武器"
+        self.assertTrue(self.install(self.equipment()))
+        self.task.executor.pause.assert_called_once()
+        self.assertIn("目标武器", self.task.log_warning.call_args.args[0])
+
+    def test_equipment_keyword_is_enough_to_pause(self):
+        self.task.config["得到指定装备后暂停"] = "武器"
+        self.assertTrue(self.install(self.equipment()))
+        self.task.executor.pause.assert_called_once()
+
+    def test_other_equipment_does_not_pause(self):
+        self.task.config["得到指定装备后暂停"] = "拷问工具箱"
+        self.assertFalse(self.install(self.equipment()))
+        self.task.executor.pause.assert_not_called()
+
+    def test_refined_specified_equipment_does_not_pause(self):
+        self.task.config["得到指定装备后暂停"] = "未配置装备"
+        self.assertTrue(self.install(self.equipment("未配置装备", quality="传说")))
+        self.assert_refined()
+        self.task.executor.pause.assert_not_called()
+
+    def test_buying_specified_equipment_pauses_after_purchase(self):
+        self.task.config["得到指定装备后暂停"] = "目标武器"
+        cancel, purchase = box("取消", x=300), box("购买", x=920)
+        self.task.all_texts = [cancel, purchase, box("100", x=700)]
+        self.assertTrue(self.install(self.equipment()))
+        self.task.click_box.assert_called_once_with(purchase)
+        self.task.executor.pause.assert_called_once()
+
+    def test_canceled_purchase_does_not_pause(self):
+        self.task.config["得到指定装备后暂停"] = "未配置装备"
+        cancel, purchase = box("取消", x=300), box("购买", x=920)
+        self.task.all_texts = [cancel, purchase, box("100", x=700)]
+        self.assertTrue(self.install(self.equipment("未配置装备")))
+        self.task.click_box.assert_called_once_with(cancel)
+        self.task.executor.pause.assert_not_called()
+
+    def test_selecting_specified_equipment_does_not_pause_before_install(self):
+        self.task.config["得到指定装备后暂停"] = "目标武器"
+        self.select([self.equipment("未配置装备"), self.equipment()])
+        self.task.executor.pause.assert_not_called()
+
+    def test_giving_specified_equipment_to_teammate_still_pauses(self):
+        self.task.config["装备选择策略"] = "原有策略"
+        self.task.config["得到指定装备后暂停"] = "备用武器"
+        self.task.member_status["equipment"]["names"][0] = "目标武器"
+        self.qualities[0] = "史诗"
+        self.install(self.equipment("备用武器"))
+        self.task.executor.pause.assert_called_once()
 
     def test_strict_unlisted_equipment_is_refined_even_with_empty_slots_and_teammates(self):
         self.assertTrue(self.install(self.equipment("未配置装备", quality="传说")))
