@@ -3581,6 +3581,23 @@ def handle_event_task(task: TriggerTask):
             task.sleep(1)
             return True
 
+    # 与「就此离开」同一行。离开项的 event5 图标中心更高，会先被 Y<0.925 短路点掉。
+    revelation_task = next(
+        (
+            task_info
+            for task_info in tasks_info
+            if "领受计划的启示" in task_info["description"]
+        ),
+        None,
+    )
+    if revelation_task is not None:
+        task.log_info(
+            f"检测到「领受计划的启示」，选择: {revelation_task['description']}"
+        )
+        click_event_option(revelation_task)
+        task.sleep(1)
+        return True
+
     def handle_initial_node_task(description_keyword, purpose):
         """初始节点按描述选择任务；未找到目标描述时点击ESC重新开始。"""
         matched_task = next(
