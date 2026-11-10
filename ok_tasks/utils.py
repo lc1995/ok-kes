@@ -1252,6 +1252,32 @@ def _scroll_card_page(task: TriggerTask, x, y, amount, page, distance=0.25):
         task.sleep(0.5)
 
 
+# 选卡页卡面与信息统计页头像的缩放比例因主战员而异，阿黛尔海特约为0.88
+_SELECT_CARD_MEMBER_SCALES = (0.76, 0.80, 0.84, 0.88, 0.92, 0.96, 1.00, 1.04, 1.08, 1.12)
+
+
+def _find_target_member_in_select_card(task: TriggerTask, box, threshold):
+    """在选卡页按多个缩放比例匹配刷存档主战员头像，返回相似度最高的结果。"""
+    feature_name = "target_member_in_select_card"
+    feature = task.executor.feature_set.feature_dict.get(feature_name)
+    if feature is None:
+        return None
+    best = None
+    for scale in _SELECT_CARD_MEMBER_SCALES:
+        template = feature.mat if scale == 1 else cv2.resize(
+            feature.mat, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA
+        )
+        found = task.find_one(
+            feature_name=feature_name,
+            box=box,
+            threshold=threshold,
+            template=template,
+        )
+        if found and (best is None or found.confidence > best.confidence):
+            best = found
+    return best
+
+
 def select_card(task: TriggerTask, card_names, count=1, action=""):
     """使用卡组特征识别选择卡牌，支持滚动查找、基础牌移除和兜底选择。"""
     selected = 0
@@ -1362,10 +1388,8 @@ def select_card(task: TriggerTask, card_names, count=1, action=""):
             return False
         if not task.feature_exists("target_member_in_select_card"):
             return False
-        target_member = task.find_one(
-            feature_name="target_member_in_select_card",
-            box=target_member_box,
-            threshold=0.6,
+        target_member = _find_target_member_in_select_card(
+            task, target_member_box, threshold=0.6
         )
         if not target_member:
             return False
@@ -2813,7 +2837,7 @@ _SELECT_CARD_CONFIG_KEYS = {
 
 
 def _scroll_to_target_member_for_card_removal(task: TriggerTask):
-    """移除卡牌前滚动成员列表，直到目标成员出现或到达底部。"""
+    """选卡前滚动成员列表，直到目标成员出现；找不到时翻回顶部。"""
     feature_name = "target_member_in_select_card"
     page = "移除卡牌目标主战员查找"
     if not task.feature_exists(feature_name):
@@ -2836,14 +2860,13 @@ def _scroll_to_target_member_for_card_removal(task: TriggerTask):
     max_scrolls = 20
     scroll_count = 0
     while True:
-        target_member = task.find_one(
-            feature_name=feature_name,
-            box=search_box,
-            threshold=0.5,
+        target_member = _find_target_member_in_select_card(
+            task, search_box, threshold=0.6
         )
         if target_member:
             task.log_info(
-                f"{page}: 找到目标主战员，相似度={target_member.confidence:.4f}"
+                f"{page}: 找到目标主战员，相似度={target_member.confidence:.4f}，"
+                f"头像尺寸={target_member.width}x{target_member.height}"
             )
             return
         if single_page:
@@ -2851,10 +2874,10 @@ def _scroll_to_target_member_for_card_removal(task: TriggerTask):
             return
         if _point_is_white(task, 0.982, 0.846, page):
             task.log_info(f"{page}: 已到达底部，未找到目标主战员")
-            return
+            break
         if scroll_count >= max_scrolls:
             task.log_info(f"{page}: 向下滚动已达到{max_scrolls}次限制")
-            return
+            break
         _scroll_card_page(
             task,
             scroll_x,
@@ -2864,6 +2887,10 @@ def _scroll_to_target_member_for_card_removal(task: TriggerTask):
             distance=(search_region[3] - search_region[1]) / 4,
         )
         scroll_count += 1
+
+    # 后续选卡只会向下查找，停在中下部会漏掉上方的配置卡牌
+    task.log_info(f"{page}: 未找到目标主战员，翻回顶部从头选卡")
+    _scroll_deck_to_top(task, page)
 
 
 _COPY_COUNT_PATTERN = re.compile(
@@ -3101,7 +3128,7 @@ def _select_chaos_copy_cards(task: TriggerTask, count=1):
         if index:
             node_status["pending_copy_names"] = []
             if not single_page:
-                _scroll_copy_deck_to_top(task, page)
+                _scroll_deck_to_top(task, page)
             cards = refresh_cards()
         if search_named_cards(name, total, cards, single_page):
             return True
@@ -3111,8 +3138,8 @@ def _select_chaos_copy_cards(task: TriggerTask, count=1):
     return _click_copy_skip(task, page)
 
 
-def _scroll_copy_deck_to_top(task: TriggerTask, page):
-    """翻回牌库顶部，便于查找下一张复制目标。"""
+def _scroll_deck_to_top(task: TriggerTask, page):
+    """翻回牌库顶部，便于从头查找目标卡牌。"""
     up_scrolls = 0
     max_scrolls = 20
     while up_scrolls < max_scrolls:
