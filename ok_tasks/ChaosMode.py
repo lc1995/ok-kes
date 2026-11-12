@@ -75,6 +75,7 @@ class ChaosMode(TriggerTask):
         self.default_config['指定面具卡牌'] = "丢弃最多2张卡牌"
         self.default_config['面具卡牌刻印'] = "自身攻击卡牌伤害总量提升30%"
         self.default_config['刷初始卡牌'] = ""
+        self.default_config['卡组所需中立卡牌'] = []
         self.default_config['只打第一层'] = False
         self.default_config['首层结束策略'] = "自动逃离"
         self.default_config['暂停所需目标装备数量'] = 3
@@ -90,6 +91,7 @@ class ChaosMode(TriggerTask):
                             "precision_memory_visited": False,
                             "removed_card_count": 0,
                             "neutral_card_count": 0,
+                            "neutral_card_counts": {},
                             "octopus_seen": False,
                             "octopus_drop_checked": False,
                             "octopus_drop_rejected": False,
@@ -165,6 +167,12 @@ class ChaosMode(TriggerTask):
         )
         self.config_description['刷初始卡牌'] = (
             "填写目标卡牌名称后反复刷新初始卡牌；不能与“刷空档”同时使用。"
+        )
+        self.config_description['卡组所需中立卡牌'] = (
+            "每项写成“卡牌名*数量”，例如环绕之光*1、梦之边境*2。"
+            "本局获得的该卡牌达到数量后，卡牌奖励不再选择，商店不再购买。"
+            "刷初始卡牌拿到的卡也计入数量。只写卡牌名或未列出的卡牌不限数量。"
+            "只限制数量，卡牌仍需配置在“卡牌奖励优先级”或“刷初始卡牌”中才会获取。数量每局重新计算。"
         )
         self.config_description['刷空档'] = (
             "初始任务必须包含“移除2张”，否则重新开始；不能与“刷初始卡牌”同时使用。"

@@ -206,8 +206,43 @@ def _record_removed_cards(task: TriggerTask, count=1):
     )
 
 
-def _record_neutral_card(task: TriggerTask):
-    """记录本局实际获得一张中立牌。"""
+def _neutral_card_quotas(task: TriggerTask):
+    """读取“卡组所需中立卡牌”，返回 {卡牌名: 数量}。只写卡牌名的项不限数量，不纳入。"""
+    quotas = {}
+    for entry in _get_card_list(task, "卡组所需中立卡牌"):
+        parsed = _parse_copy_card_entry(entry)
+        if not parsed or parsed[1] is None:
+            continue
+        name, count = parsed
+        quotas[name] = quotas.get(name, 0) + count
+    return quotas
+
+
+def _neutral_card_quota_entry(task: TriggerTask, *card_names):
+    """按顺序用候选卡名匹配“卡组所需中立卡牌”，返回 (配置名, 数量)，未命中返回 None。"""
+    quotas = _neutral_card_quotas(task)
+    for card_name in card_names:
+        for name, count in quotas.items():
+            if _copy_name_matches(name, card_name):
+                return name, count
+    return None
+
+
+def _neutral_card_quota_reached(task: TriggerTask, *card_names):
+    """判断卡牌在本局是否已获得“卡组所需中立卡牌”配置的数量。"""
+    entry = _neutral_card_quota_entry(task, *card_names)
+    if entry is None:
+        return False
+    name, count = entry
+    owned = (getattr(task, "node_status", {}).get("neutral_card_counts") or {}).get(name, 0)
+    if owned < count:
+        return False
+    task.log_info(f"本局「{name}」已获得{owned}张，达到卡组所需{count}张，不再获取")
+    return True
+
+
+def _record_neutral_card(task: TriggerTask, *card_names):
+    """记录本局实际获得一张中立牌，命中“卡组所需中立卡牌”时同时累计该卡数量。"""
     node_status = getattr(task, "node_status", None)
     if not isinstance(node_status, dict):
         return
@@ -218,6 +253,13 @@ def _record_neutral_card(task: TriggerTask):
         f"本局获得中立牌数量增加1，"
         f"当前共{node_status['neutral_card_count']}张"
     )
+    entry = _neutral_card_quota_entry(task, *card_names)
+    if entry is None:
+        return
+    name, count = entry
+    counts = node_status.setdefault("neutral_card_counts", {})
+    counts[name] = counts.get(name, 0) + 1
+    task.log_info(f"本局「{name}」已获得{counts[name]}张，卡组所需{count}张")
 
 
 def _parse_discounted_price(price_text):
@@ -1840,6 +1882,14 @@ def log_node_status(task: TriggerTask):
         )
         task.info_set("本局已移除卡牌", ns.get("removed_card_count", 0))
         task.info_set("本局已获得中立牌", ns.get("neutral_card_count", 0))
+        neutral_cards = ns.get("neutral_card_counts") or {}
+        if getattr(task, "name", "") == "自动卡厄思模式" or neutral_cards:
+            task.info_set(
+                "本局所需中立卡牌",
+                "，".join(
+                    f"{name}×{count}" for name, count in neutral_cards.items()
+                ) or "无",
+            )
         copied_cards = ns.get("copied_card_counts") or {}
         if getattr(task, "name", "") == "自动卡厄思模式" or copied_cards:
             task.info_set(
@@ -2126,6 +2176,9 @@ def handle_card_reward(task: TriggerTask):
             ),
             None,
         )
+        if chosen_card and _neutral_card_quota_reached(task, chosen_card["name"], pri_name):
+            chosen_card = None
+            continue
         if chosen_card:
             task.log_info(
                 f"按优先级选择卡牌: {chosen_card['name']}（配置: {pri_name}）"
@@ -4379,6 +4432,8 @@ def handle_shop(task: TriggerTask):
                  if name and (name in item_name or item_name in name)),
                 None,
                 )
+                if matched_name and _neutral_card_quota_reached(task, item_name, matched_name):
+                    continue
             else:
                 if (
                     _get_config_value(task, "装备选择策略", "原有策略") == "仅目标主战员列表装备"
@@ -4698,7 +4753,7 @@ def _initial_node_status():
             "node_count": 0, "enter_new_node": False, "node_type": "", "is_escaped": False,
             "save_target_member": False, "target_mask_card_position": -1,
             "get_specific_flash": False, "removed_card_count": 0,
-            "neutral_card_count": 0, "octopus_seen": False,
+            "neutral_card_count": 0, "neutral_card_counts": {}, "octopus_seen": False,
             "octopus_drop_checked": False, "octopus_drop_rejected": False,
             "octopus_drop_matched": False, "octopus_seen_names": [],
             "copied_card_counts": {}, "pending_copy_names": []}
@@ -4801,6 +4856,7 @@ def reset_layer_status(task: TriggerTask):
                 'get_specific_flash': ns.get('get_specific_flash', False),
                 'removed_card_count': ns.get('removed_card_count', 0),
                 'neutral_card_count': ns.get('neutral_card_count', 0),
+                'neutral_card_counts': dict(ns.get('neutral_card_counts') or {}),
                 'copied_card_counts': dict(ns.get('copied_card_counts') or {})}
         task.node_status = _initial_node_status()
         task.node_status['pass_final_boss_count'] = keep['pass_final_boss_count']
@@ -4811,6 +4867,7 @@ def reset_layer_status(task: TriggerTask):
         task.node_status['get_specific_flash'] = keep['get_specific_flash']
         task.node_status['removed_card_count'] = keep['removed_card_count']
         task.node_status['neutral_card_count'] = keep['neutral_card_count']
+        task.node_status['neutral_card_counts'] = keep['neutral_card_counts']
         task.node_status['copied_card_counts'] = keep['copied_card_counts']
 
 
@@ -4924,6 +4981,8 @@ def handle_card_assign(task: TriggerTask):
          and (config_name in card_name or card_name in config_name)),
         None,
     )
+    if matched_card_name and _neutral_card_quota_reached(task, card_name, matched_card_name):
+        matched_card_name = None
     if matched_card_name:
         task.log_info(f"卡牌「{card_name}」命中奖励优先级「{matched_card_name}」")
     else:
@@ -5030,10 +5089,10 @@ def handle_card_assign(task: TriggerTask):
             f"购买卡牌需要{card_price}信用点，当前{current_credit}，点击「购买」"
         )
         task.click_box(purchase_box)
-        _record_neutral_card(task)
+        _record_neutral_card(task, card_name, matched_card_name)
         task.sleep(1)
         return True
-    _record_neutral_card(task)
+    _record_neutral_card(task, card_name, matched_card_name)
     return False
 
 def handle_held_cards_page(task: TriggerTask):
