@@ -153,3 +153,37 @@ class TestOctopusEquipmentFarm(unittest.TestCase):
             self.assertFalse(utils_chaos.handle_octopus_handoff(self.task))
         self.assertTrue(self.task.node_status["octopus_seen"])
         self.task.executor.pause.assert_not_called()
+
+    def test_empty_farm_config_ignores_pause_target(self):
+        self.task.config["刷章鱼装备"] = ""
+        self.task.config["得到指定装备后暂停"] = "乱世之触"
+        self.assertEqual(utils_chaos._octopus_equipment_target(self.task), "")
+        self.show_install_page("怪异之壳")
+        self.assertFalse(utils_chaos.handle_octopus_equipment_drop(self.task))
+        self.show_route()
+        self.assertFalse(utils_chaos.handle_octopus_equipment_drop(self.task))
+        self.click.assert_not_called()
+
+    def test_ocr_name_marks_seen_without_eye_match(self):
+        self.task.config["遇到章鱼暂停"] = False
+        self.task.node_status["octopus_seen"] = False
+        self.task._octopus_scan_log_time = 0
+        self.add_text("无限之触手+2", 0.50, 0.08)
+        with patch.object(utils_chaos, "match_octopus", return_value=None):
+            self.assertFalse(utils_chaos.handle_octopus_handoff(self.task))
+        self.assertTrue(self.task.node_status["octopus_seen"])
+
+    def test_octopus_drop_name_marks_seen_then_route_restarts(self):
+        self.task.node_status["octopus_seen"] = False
+        self.task.config["刷章鱼装备"] = "乱世之触"
+        self.show_install_page("怪异之壳")
+        self.assertFalse(utils_chaos.handle_octopus_equipment_drop(self.task))
+        self.assertTrue(self.task.node_status["octopus_seen"])
+        self.show_route()
+        self.assertTrue(utils_chaos.handle_octopus_equipment_drop(self.task))
+        self.click.assert_called_once_with(self.task, 0.959, 0.053)
+
+    def test_all_six_octopus_drops_are_recognized(self):
+        for name in ("乱世之触", "怪异之壳", "混沌之识", "灾难之像", "随机之球", "错乱之骰"):
+            self.assertTrue(utils_chaos._is_octopus_drop_name(name), name)
+        self.assertFalse(utils_chaos._is_octopus_drop_name("拷问工具箱"))

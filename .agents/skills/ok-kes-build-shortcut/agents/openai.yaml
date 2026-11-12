@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build desktop shortcut"
+  short_description: "After an ok-kes build, put a desktop shortcut on the latest exe."
+  default_prompt: "Use $ok-kes-build-shortcut after compiling ok-kes to create a desktop shortcut to the new exe."

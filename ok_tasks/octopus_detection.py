@@ -1,4 +1,5 @@
 """赛内克图斯独立眼部模板；不复用特殊怪物 secret_enemy。"""
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -18,12 +19,36 @@ class OctopusMatch(NamedTuple):
     height: int
 
 
+def _template_file() -> Path:
+    """源码在 ok_tasks/assets；PyInstaller 冻结后模块落在 _MEIPASS 根目录。"""
+    name = "octopus_eye.png"
+    here = Path(__file__).resolve().parent
+    roots = [here]
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        roots.append(Path(mei))
+    roots.append(Path.cwd())
+    seen = set()
+    for root in roots:
+        for folder in (root / "assets", root / "ok_tasks" / "assets"):
+            path = folder / name
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if path.is_file():
+                return path
+    return here / "assets" / name
+
+
 @lru_cache(maxsize=1)
 def _templates():
-    path = Path(__file__).parent / "assets" / "octopus_eye.png"
+    path = _template_file()
+    if not path.is_file():
+        return ()
     source = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_COLOR)
     if source is None:
-        raise RuntimeError(f"无法读取章鱼模板：{path}")
+        return ()
     # 固定分析宽度，兼容游戏分辨率；缓存不同大小的灰度模板。
     return tuple(
         cv2.cvtColor(cv2.resize(source, None, fx=scale, fy=scale), cv2.COLOR_BGR2GRAY)
@@ -35,6 +60,9 @@ def match_octopus(frame):
     """返回敌方区域的最高匹配分数和原画面坐标，调用者判断阈值。"""
     if frame is None or frame.size == 0:
         return None
+    templates = _templates()
+    if not templates:
+        return None
     height, width = frame.shape[:2]
     ratio = 1280 / width
     resized = cv2.resize(frame, (1280, round(height * ratio)))
@@ -45,7 +73,7 @@ def match_octopus(frame):
         return None
     gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
     best = None
-    for template in _templates():
+    for template in templates:
         th, tw = template.shape[:2]
         if th > gray.shape[0] or tw > gray.shape[1]:
             continue

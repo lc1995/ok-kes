@@ -162,15 +162,18 @@ def _get_route_priority(task: TriggerTask):
 
 # ------------------------- 通用工具 -------------------------
 
-def _get_current_credit(task: TriggerTask):
-    """读取当前信用点数，从两个可能位置取最大值。"""
+def _get_current_credit(task: TriggerTask, region=(0.650, 0.015, 0.820, 0.090)):
+    """读取右上角信用点数。左侧 x≈0.61 的水晶数量不在区域内。"""
     credit = 0
-    for pos_x, pos_y in [(0.794, 0.054), (0.734, 0.053)]:
-        box = find_box_at_point(task, pos_x, pos_y)
-        if box and box.name.isdigit():
-            val = int(box.name)
-            if val > credit:
-                credit = val
+    texts = task.all_texts if isinstance(task.all_texts, (list, tuple)) else []
+    for box in texts:
+        cx = (box.x + box.width / 2) / task.width
+        cy = (box.y + box.height / 2) / task.height
+        if not (region[0] <= cx <= region[2] and region[1] <= cy <= region[3]):
+            continue
+        name = box.name.strip().replace(",", "")
+        if name.isdigit():
+            credit = max(credit, int(name))
     return credit
 
 
@@ -3410,6 +3413,7 @@ def handle_three_choice_card_remove(task: TriggerTask):
             if region[0] <= (box.x + box.width / 2) / task.width <= region[2]
             and region[1] <= (box.y + box.height / 2) / task.height <= region[3]
             and "移除" in box.name
+            and "所选卡牌" not in box.name
         ),
         None,
     )
@@ -3539,9 +3543,27 @@ def handle_event_task(task: TriggerTask):
             task.click_box(reward)
             return True
 
+    if _click_binary_pickup_card(task):
+        return True
+
     tasks_info = recognize_event_options(task, page="事件任务页面")
     if not tasks_info:
-        return False
+        # 宝库内部等场景没有底部选项，需要直接点击场景中的宝箱图标
+        chests = task.find_feature(
+            feature_name="treasure_chest",
+            box=task.box_of_screen(0.084, 0.121, 0.991, 0.762),
+            threshold=0.8,
+        )
+        if not chests:
+            return False
+        chest = random.choice(chests)
+        task.log_info(
+            f"事件场景检测到{len(chests)}个宝箱图标，随机点击一个，"
+            f"相似度={chest.confidence:.4f}"
+        )
+        task.click_box(chest)
+        task.sleep(2)
+        return True
 
     selectable_tasks = []
     for task_info in tasks_info:
@@ -3588,6 +3610,9 @@ def handle_event_task(task: TriggerTask):
         task.sleep(1)
         return True
 
+    if _click_special_flash(task, reason="事件场景"):
+        return True
+
     def click_event_option(event_task):
         left, top, right, bottom = event_task["description_region"]
         description_x = (left + right) / 2
@@ -3622,6 +3647,20 @@ def handle_event_task(task: TriggerTask):
             f"检测到「领受计划的启示」，选择: {revelation_task['description']}"
         )
         click_event_option(revelation_task)
+        task.sleep(1)
+        return True
+
+    pickup_task = next(
+        (
+            task_info
+            for task_info in tasks_info
+            if "01000" in task_info["description"]
+        ),
+        None,
+    )
+    if pickup_task is not None:
+        task.log_info(f"检测到「01000」事件，选择: {pickup_task['description']}")
+        click_event_option(pickup_task)
         task.sleep(1)
         return True
 
@@ -4053,19 +4092,51 @@ def _wait_for_rest_confirm(task: TriggerTask):
     return True
 
 
+def _click_binary_pickup_card(task: TriggerTask, region=(0.198, 0.600, 0.960, 1.000)):
+    """神闪触发后出现的「01000010捡起…」卡没有事件图标，只能按标题文字点击。"""
+    texts = task.all_texts if isinstance(task.all_texts, (list, tuple)) else []
+    title = next(
+        (
+            box for box in texts
+            if "01000" in box.name
+            and region[0] <= (box.x + box.width / 2) / task.width <= region[2]
+            and region[1] <= (box.y + box.height / 2) / task.height <= region[3]
+        ),
+        None,
+    )
+    if title is None:
+        return False
+    task.log_info(f"检测到「01000」事件卡「{title.name}」，点击选择")
+    task.click_box(title)
+    task.sleep(1)
+    return True
+
+
+def _click_special_flash(task: TriggerTask, region=(0.084, 0.121, 0.991, 0.762), reason=""):
+    """点击场景中的神闪图标。命中时返回 True。"""
+    special_flash = task.find_one(
+        feature_name=["special_flash", "special_flash_luosi", "special_flash_luosi2"],
+        box=task.box_of_screen(*region),
+    )
+    if not special_flash:
+        return False
+    prefix = f"{reason}" if reason else "场景"
+    task.log_info(
+        f"{prefix}检测到神闪图标「{special_flash.name}」，先点击触发神闪，"
+        f"相似度={special_flash.confidence:.4f}"
+    )
+    task.click_box(special_flash)
+    task.sleep(1)
+    return True
+
+
 def handle_rest(task: TriggerTask):
     """休息界面: 根据血量、信用点和冥想状态选择休息或冥想。"""
-    special_flash = task.find_one(
-        feature_name=["special_flash_luosi", "special_flash_luosi2"],
-        box=task.box_of_screen(0.219, 0.208, 0.786, 0.814),
-    )
-    if special_flash:
-        _move_and_click(
-            task,
-            (special_flash.x + special_flash.width / 2) / task.width,
-            (special_flash.y + special_flash.height / 2) / task.height,
-        )
-        task.sleep(1)
+    if _click_special_flash(
+        task,
+        region=(0.219, 0.208, 0.786, 0.814),
+        reason="休息界面",
+    ):
         return True
 
     rest_feature = _find_rest_feature(task)
@@ -4168,12 +4239,30 @@ def handle_rest(task: TriggerTask):
     # 检测是否需要进入德朗商店
     shop_box = find_box_at_point(task, 0.360, 0.138)
     if shop_box and "德朗商店" in shop_box.name and hasattr(task, 'node_status') and task.node_status.get('shop', False):
-        task.log_info("检测到德朗商店，且 node_status['shop']=True，进入商店")
+        attempts = task.node_status.get("shop_enter_attempts", 0)
+        if attempts >= SHOP_ENTER_MAX_ATTEMPTS:
+            task.log_info(f"连续{attempts}次点击德朗商店未进入，放弃本次商店")
+            task.node_status["shop"] = False
+            task.node_status["shop_enter_attempts"] = 0
+            return False
+        task.node_status["shop_enter_attempts"] = attempts + 1
+        task.log_info(
+            f"检测到德朗商店，且 node_status['shop']=True，进入商店（第{attempts + 1}次）"
+        )
         task.node_status.pop("rejected_shop_equipment", None)
-        task.click_box(shop_box)
+        task.node_status.pop("shop_remove_clicked", None)
+        # 商店是场景物体，后台点击前需要先移动鼠标让游戏更新悬停目标。
+        _move_and_click(
+            task,
+            (shop_box.x + shop_box.width / 2) / task.width,
+            (shop_box.y + shop_box.height / 2) / task.height,
+        )
         task.sleep(2)
         return True
     return False
+
+
+SHOP_ENTER_MAX_ATTEMPTS = 5
 
 
 def handle_shop(task: TriggerTask):
@@ -4181,6 +4270,7 @@ def handle_shop(task: TriggerTask):
     box = find_box_at_point(task, 0.729, 0.261)
     soldout = find_box_at_point(task, 0.727, 0.286)
     if (box and "移除卡牌" in box.name) or (soldout and "售" in soldout.name):
+        task.node_status["shop_enter_attempts"] = 0
         task.log_info("handle_shop: 通过页面判定（移除卡牌或售罄）")
         if soldout and "售" in soldout.name:
             task.log_info(f"德朗商店: 移除卡牌已售罄")
@@ -4198,11 +4288,14 @@ def handle_shop(task: TriggerTask):
                         f"本局已移除{removed_card_count}张卡牌，"
                         "达到5张上限，不再使用信用点移除卡牌"
                     )
-                elif cost <= current_credit and task.node_status['shop'] is True:
+                elif task.node_status.get("shop_remove_clicked", False):
+                    task.log_info("德朗商店: 本次进店已点击过移除卡牌，继续挑选其他商品")
+                elif cost <= current_credit:
                     task.log_info(f"德朗商店: 移除卡牌需{cost}信用点，当前{current_credit}，足够，点击移除")
                     task.click_box(box)
                     task.sleep(1)
                     task.node_status['shop'] = False
+                    task.node_status["shop_remove_clicked"] = True
                     return True
                 else:
                     task.log_info(f"德朗商店: 移除卡牌需{cost}信用点，当前{current_credit}，不足，继续挑选其他商品")

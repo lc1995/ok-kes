@@ -201,6 +201,14 @@ class TestOctopusHandoff(unittest.TestCase):
             self.task.frame[y:y + 4, x:x + 4] = (50, 120, 200)
             self.assertTrue(utils_chaos._octopus_auto_battle_state(self.task))
 
+    def test_missing_template_does_not_crash_chaos_mode(self):
+        self.detector.stop()
+        self.task._octopus_template_error_logged = False
+        with patch.object(utils_chaos, "match_octopus", side_effect=FileNotFoundError("octopus_eye.png")):
+            self.assertFalse(utils_chaos.handle_octopus_handoff(self.task))
+        self.task.log_warning.assert_called()
+        self.assertTrue(self.task._octopus_template_error_logged)
+
 
 if __name__ == "__main__":
     unittest.main()

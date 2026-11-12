@@ -320,8 +320,8 @@ msgstr "Pause and notify after this equipment is installed or purchased. Leave b
 msgid "刷章鱼装备"
 msgstr "Farm a specific octopus equipment"
 
-msgid "填写目标装备名称，例如混沌之识。战胜章鱼的这一关里，每件装备都会和该名称比较；回到路线时如果一件都没对上，就退出并重新开局。留空则不启用。无需完整名称，关键字即可。与“遇到章鱼暂停”可同时使用。"
-msgstr "Enter the target equipment name, for example Chaos Cognition. Every equipment drop in the stage where the octopus is defeated is compared with this name. If none match when the route returns, quit and start a new run. Leave blank to disable. A distinctive keyword is enough. This can be used together with pausing for the octopus."
+msgid "填写目标装备名称。章鱼装备共6件：乱世之触、怪异之壳、混沌之识、灾难之像、随机之球、错乱之骰。战胜章鱼的这一关里，每件装备都会和该名称比较；回到路线时如果一件都没对上，就退出并重新开局。留空则不启用。无需完整名称，关键字即可。与“遇到章鱼暂停”可同时使用。"
+msgstr "Enter the target equipment name. The octopus drops 6 equipment items: 乱世之触, 怪异之壳, 混沌之识 (Chaos Cognition), 灾难之像, 随机之球, 错乱之骰. Every equipment drop in the stage where the octopus is defeated is compared with this name. If none match when the route returns, quit and start a new run. Leave blank to disable. A distinctive keyword is enough. This can be used together with pausing for the octopus."
 
 msgid "每项写成“卡牌名*次数”，例如展开极光*2、剑雨*1。优先复制还没达到次数、并且当前画面里有的第一张。当前画面没有这张卡时，改复制后面还没达到次数的卡。列表里的卡都找不到，或次数都已达到，就跳过，不复制其他卡牌。一次要选多张时，只选同一张还能覆盖本次张数的卡。只写卡牌名时无限复制。次数每局重新计算。"
 msgstr "Write each entry as “card name*count”, for example 展开极光*2 and 剑雨*1. Copy the first listed card that is on screen and still has copies left. If it is absent, copy the next listed card that still has copies left. If none of the listed cards are present, or every count is already reached, skip and do not copy another card. When several cards must be selected, use only one card that can cover the whole selection. A name without a count is copied without limit. Counts reset every run."

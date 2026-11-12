@@ -179,3 +179,40 @@ class TestMemoryCardSelect(unittest.TestCase):
 
         self.click.assert_called_once_with(self.task, 0.22, 0.24)
         self.assertIn("命中指定记忆卡牌「记忆：丧失」", self._logs())
+
+    def test_button_below_old_band_is_clicked(self):
+        self.recognize.return_value = self._cards()
+        self.task.all_texts.extend([
+            _box("重新搜索", 0.20, 0.96),
+            _box("2/3", 0.30, 0.96),
+            _box("长按卡牌以查看信息。", 0.50, 0.93, width=180),
+        ])
+
+        self.assertTrue(utils_chaos.handle_memory_card_select(self.task))
+
+        _, click_x, click_y = self.click.call_args.args
+        self.assertAlmostEqual(click_x, 0.20, places=3)
+        self.assertAlmostEqual(click_y, 0.96, places=3)
+        self.assertIn("剩余搜索次数=2，点击重新搜索", self._logs())
+
+    def test_button_outside_card_columns_is_clicked(self):
+        self.recognize.return_value = self._cards()
+        self.task.all_texts.append(_box("重新搜索 1/3", 0.95, 0.50, width=140))
+
+        self.assertTrue(utils_chaos.handle_memory_card_select(self.task))
+
+        _, click_x, click_y = self.click.call_args.args
+        self.assertAlmostEqual(click_x, 0.95, places=3)
+        self.assertAlmostEqual(click_y, 0.50, places=3)
+
+    def test_other_row_fraction_does_not_override_button_count(self):
+        self.recognize.return_value = self._cards()
+        self.task.all_texts.extend([
+            _box("1/2", 0.25, 0.64),
+            _box("重新搜索", 0.20, 0.96),
+            _box("2/3", 0.30, 0.96),
+        ])
+
+        self.assertTrue(utils_chaos.handle_memory_card_select(self.task))
+
+        self.assertIn("剩余搜索次数=2，点击重新搜索", self._logs())

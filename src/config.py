@@ -21,6 +21,43 @@ def _get_config_folder():
     return os.path.join(os.getcwd(), "configs")
 
 
+def _redirect_mei_dir(mei, exe_dir, name):
+    """把 PyInstaller 临时目录里的 logs/screenshots 指到 exe 旁边，避免下次启动被清掉。"""
+    target = os.path.join(exe_dir, name)
+    os.makedirs(target, exist_ok=True)
+    link = os.path.join(mei, name)
+    try:
+        if os.path.exists(link) and os.path.samefile(link, target):
+            return target
+    except OSError:
+        pass
+    if os.path.isdir(link) and not os.path.islink(link):
+        try:
+            os.rmdir(link)
+        except OSError:
+            return target
+    elif os.path.lexists(link):
+        return target
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:
+        os.system(f'cmd /c mklink /J "{link}" "{target}" >nul 2>nul')
+    return target
+
+
+def apply_frozen_runtime_paths(app_config):
+    """冻结运行时：数据在 _MEIPASS，日志和截图写到 exe 目录。"""
+    if not getattr(sys, "frozen", False):
+        return app_config
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    mei = getattr(sys, "_MEIPASS", exe_dir)
+    os.chdir(mei)
+    app_config["config_folder"] = os.path.join(exe_dir, "configs")
+    app_config["screenshots_folder"] = _redirect_mei_dir(mei, exe_dir, "screenshots")
+    _redirect_mei_dir(mei, exe_dir, "logs")
+    return app_config
+
+
 def _read_ocr_backend():
     """OCR 在 GUI 初始化前创建，因此需要提前读取全局配置文件。"""
     config_path = os.path.join(_get_config_folder(), "OCR设置.json")

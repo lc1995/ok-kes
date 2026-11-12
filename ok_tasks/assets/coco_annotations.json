@@ -329,6 +329,18 @@
             "file_name": "images/1.png",
             "width": 1920,
             "height": 1080
+        },
+        {
+            "id": 206,
+            "file_name": "images/1.png",
+            "width": 1920,
+            "height": 1080
+        },
+        {
+            "id": 207,
+            "file_name": "images/special_flash.png",
+            "width": 1920,
+            "height": 1080
         }
     ],
     "annotations": [
@@ -1462,6 +1474,32 @@
             ],
             "area": 4060,
             "iscrowd": 0
+        },
+        {
+            "id": 88,
+            "image_id": 206,
+            "category_id": 88,
+            "bbox": [
+                1277,
+                372,
+                68,
+                70
+            ],
+            "area": 4760,
+            "iscrowd": 0
+        },
+        {
+            "id": 89,
+            "image_id": 207,
+            "category_id": 89,
+            "bbox": [
+                0,
+                0,
+                70,
+                68
+            ],
+            "area": 4760,
+            "iscrowd": 0
         }
     ],
     "categories": [
@@ -1898,6 +1936,16 @@
         {
             "id": 87,
             "name": "eyes",
+            "supercategory": ""
+        },
+        {
+            "id": 88,
+            "name": "treasure_chest",
+            "supercategory": ""
+        },
+        {
+            "id": 89,
+            "name": "special_flash",
             "supercategory": ""
         }
     ]

@@ -59,9 +59,8 @@ def handle_memory_process(task: TriggerTask):
     return True
 
 
-# 相对特征中心。全屏 OCR 会漏掉按钮上的浅灰小字，只对这一条重新识别。
-_MEMORY_SEARCH_Y_OFFSETS = (0.50, 0.62)
-_MEMORY_SEARCH_DIAGNOSTIC_REGION = (0.10, 0.70, 0.90, 0.95)
+# 重新搜索按钮不固定在卡牌下方，整屏重新识别后按同一行读取剩余次数。
+_MEMORY_SEARCH_ROW_TOLERANCE = 0.06
 
 
 def _relative_center(task, box):
@@ -87,7 +86,7 @@ def _real_memory_select_cards(cards):
 
 
 def _memory_search_columns(task, cards):
-    """按上方每张卡的横向中线划分重新搜索区域。"""
+    """按上方每张卡的横向中线划分列，只用于给全屏找到的按钮对应卡牌。"""
     real_cards = sorted(
         _real_memory_select_cards(cards),
         key=lambda card: _memory_feature_center(task, card)[0],
@@ -97,7 +96,7 @@ def _memory_search_columns(task, cards):
     centers = [_memory_feature_center(task, card)[0] for card in real_cards]
     columns = []
     for index, card in enumerate(real_cards):
-        center_x, center_y = _memory_feature_center(task, card)
+        center_x, _center_y = _memory_feature_center(task, card)
         if len(centers) == 1:
             x1 = center_x - 0.12
             x2 = center_x + 0.12
@@ -112,32 +111,113 @@ def _memory_search_columns(task, cards):
                 x2 = (center_x + centers[index + 1]) / 2
         columns.append({
             "card": card,
-            "region": (
-                max(0.0, x1),
-                max(0.0, center_y + _MEMORY_SEARCH_Y_OFFSETS[0]),
-                min(1.0, x2),
-                min(1.0, center_y + _MEMORY_SEARCH_Y_OFFSETS[1]),
-            ),
+            "region": (max(0.0, x1), 0.0, min(1.0, x2), 1.0),
         })
     return columns
 
 
 def _ocr_memory_search_boxes(task, region):
-    """对单列按钮区域重新 OCR。全屏结果里没有这行低对比度文字。"""
+    """整屏重新 OCR。按钮可能落在卡牌列窄条之外。"""
     boxes = task.ocr(region[0], region[1], region[2], region[3]) or []
     return _simplify_texts(list(boxes))
 
 
-def _boxes_in_region(task, region):
+def _boxes_in_region(task, region, boxes=None):
     x1, y1, x2, y2 = region
     matched = []
-    for box in task.all_texts:
+    for box in task.all_texts if boxes is None else boxes:
         if not getattr(box, "name", "").strip():
             continue
         center_x, center_y = _relative_center(task, box)
         if x1 <= center_x <= x2 and y1 <= center_y <= y2:
             matched.append(box)
     return matched
+
+
+def _column_name_at_x(columns, x):
+    for column in columns:
+        x1, _y1, x2, _y2 = column["region"]
+        if x1 <= x <= x2:
+            return column["card"]["name"]
+    return ""
+
+
+def _group_text_rows(task, boxes, tolerance):
+    ordered = sorted(
+        boxes,
+        key=lambda box: (_relative_center(task, box)[1], box.x),
+    )
+    rows = []
+    for box in ordered:
+        center_y = _relative_center(task, box)[1]
+        if not rows or center_y - rows[-1][0] > tolerance:
+            rows.append([center_y, [box]])
+        else:
+            rows[-1][1].append(box)
+    return [row[1] for row in rows]
+
+
+def _disjoint_shortest_spans(boxes, text):
+    remaining = list(boxes)
+    spans = []
+    while remaining:
+        span = _shortest_text_span(remaining, text)
+        if not span:
+            break
+        spans.append(span)
+        used = {id(box) for box in span}
+        remaining = [box for box in remaining if id(box) not in used]
+    return spans
+
+
+def _collect_refresh_actions(task, boxes, refresh_text):
+    """在全屏文字里找出每个重新搜索，并用同一行右侧文字读剩余次数。"""
+    named = [box for box in boxes if getattr(box, "name", "").strip()]
+    actions = []
+    for row in _group_text_rows(task, named, _MEMORY_SEARCH_ROW_TOLERANCE):
+        spans = _disjoint_shortest_spans(row, refresh_text)
+        spans.sort(key=lambda span: _span_center(task, span)[0])
+        for index, span in enumerate(spans):
+            left = min(_relative_center(task, box)[0] for box in span) - 0.02
+            if index + 1 < len(spans):
+                right = _span_center(task, spans[index + 1])[0] - 0.02
+            else:
+                right = left + 1.0
+            span_y = _span_center(task, span)[1]
+            segment = []
+            for box in named:
+                center_x, center_y = _relative_center(task, box)
+                if abs(center_y - span_y) > _MEMORY_SEARCH_ROW_TOLERANCE:
+                    continue
+                if left <= center_x < right:
+                    segment.append(box)
+            if not segment:
+                segment = list(span)
+            joined = "".join(
+                box.name.strip()
+                for box in sorted(segment, key=lambda item: item.x)
+            )
+            actions.append({
+                "span": span,
+                "joined": joined,
+                "remaining": _memory_search_remaining(joined),
+                "center": _span_center(task, span),
+            })
+    return actions
+
+
+def _refresh_candidate_boxes(boxes, refresh_text):
+    keywords = [refresh_text, refresh_text[:2], "搜索", "探索"]
+    picked = []
+    for box in boxes:
+        name = getattr(box, "name", "").strip()
+        if not name:
+            continue
+        if any(keyword and keyword in name for keyword in keywords):
+            picked.append(box)
+        elif re.search(r"\d+\s*[/／]\s*\d+", name):
+            picked.append(box)
+    return picked
 
 
 def _format_ocr_boxes(task, boxes):
@@ -198,7 +278,7 @@ def _choose_random_memory_card(task, cards):
 
 
 def handle_memory_card_select(task: TriggerTask):
-    """记忆卡牌选择页面：优先目标卡牌，其次指定记忆，否则按卡牌列刷新。"""
+    """记忆卡牌选择页面：优先目标卡牌，其次指定记忆，否则全屏查找重新搜索。"""
     title = _get_region_text(task, (0.341, 0.011, 0.670, 0.171))
     if "选择铭刻的记忆" not in title:
         return False
@@ -225,61 +305,53 @@ def handle_memory_card_select(task: TriggerTask):
                 return True
 
     refresh_text = _get_game_text(task, "重新搜索")
-    task.log_info(
-        "记忆卡牌选择页面：底部候选文本="
-        + _format_ocr_boxes(task, _boxes_in_region(task, _MEMORY_SEARCH_DIAGNOSTIC_REGION))
-    )
     columns = _memory_search_columns(task, cards)
     if not columns:
-        task.log_info("记忆卡牌选择页面：未找到上方卡牌行，无法按列定位重新搜索")
-        _choose_random_memory_card(task, cards)
-        return True
+        task.log_info("记忆卡牌选择页面：未找到上方卡牌行，改为全屏查找重新搜索")
+
+    screen_boxes = _ocr_memory_search_boxes(task, (0.0, 0.0, 1.0, 1.0))
+    task.log_info(
+        "记忆卡牌选择页面：全屏重新搜索候选="
+        + _format_ocr_boxes(task, _refresh_candidate_boxes(screen_boxes, refresh_text))
+    )
+    task.log_info(
+        "记忆卡牌选择页面：全屏底部文本="
+        + _format_ocr_boxes(task, _boxes_in_region(task, (0.0, 0.70, 1.0, 1.0), screen_boxes))
+    )
+    actions = _collect_refresh_actions(task, screen_boxes, refresh_text)
+    if not actions:
+        actions = _collect_refresh_actions(task, task.all_texts, refresh_text)
 
     exhausted = False
     missing_count = False
-    for column in columns:
-        region = column["region"]
-        boxes = _ocr_memory_search_boxes(task, region)
-        joined = "".join(
-            box.name.strip()
-            for box in sorted(boxes, key=lambda item: item.x)
-        )
-        card_name = column["card"]["name"]
-        task.log_info(
-            f"记忆卡牌选择页面：卡牌「{card_name}」搜索区域="
-            f"({region[0]:.4f}, {region[1]:.4f}, {region[2]:.4f}, {region[3]:.4f})，"
-            f"区域文本=「{joined}」"
-        )
-        if refresh_text not in joined:
-            task.log_info(f"记忆卡牌选择页面：卡牌「{card_name}」列内未识别到重新搜索")
-            continue
-        remaining = _memory_search_remaining(joined)
+    for action in actions:
+        click_x, click_y = action["center"]
+        card_name = _column_name_at_x(columns, click_x)
+        card_prefix = f"卡牌「{card_name}」" if card_name else ""
+        remaining = action["remaining"]
         if remaining is None:
             missing_count = True
             task.log_info(
-                f"记忆卡牌选择页面：卡牌「{card_name}」"
-                "已识别到重新搜索，但未识别到剩余次数"
+                f"记忆卡牌选择页面：{card_prefix}已识别到重新搜索，但未识别到剩余次数"
             )
             continue
         if remaining == 0:
             exhausted = True
             task.log_info(
-                f"记忆卡牌选择页面：卡牌「{card_name}」剩余搜索次数=0，跳过重新搜索"
+                f"记忆卡牌选择页面：{card_prefix}剩余搜索次数=0，跳过重新搜索"
             )
             continue
-        span = _shortest_text_span(boxes, refresh_text)
-        if not span:
-            missing_count = True
-            continue
-        click_x, click_y = _span_center(task, span)
-        task.log_info(f"记忆卡牌选择页面：剩余搜索次数={remaining}，点击重新搜索")
+        task.log_info(
+            f"记忆卡牌选择页面：剩余搜索次数={remaining}，点击重新搜索"
+            f"（中心={click_x:.4f},{click_y:.4f}，文本=「{action['joined']}」）"
+        )
         _move_and_click(task, click_x, click_y)
         task.sleep(1)
         return True
 
-    if exhausted:
+    if actions and exhausted:
         task.log_info("记忆卡牌选择页面：重新搜索次数已用完")
-    elif missing_count:
+    elif actions and missing_count:
         task.log_info("记忆卡牌选择页面：已识别到重新搜索，但未识别到剩余次数")
     else:
         task.log_info("记忆卡牌选择页面：未识别到重新搜索按钮")
@@ -601,6 +673,10 @@ def handle_archive_target_member(task: TriggerTask):
     return True
 
 
+SAVE_TARGET_MEMBER_MAX_ATTEMPTS = 3
+SAVE_TARGET_MEMBER_RETRY_SECONDS = 60
+
+
 def handle_save_target_member(task: TriggerTask):
     """主界面：进入信息统计页面获取刷存档目标主战员头像特征。"""
     if not _get_current_hp_percent(task):
@@ -611,7 +687,21 @@ def handle_save_target_member(task: TriggerTask):
         return False
     if task.node_status.get("save_target_member", False):
         return False
+    # 商店等界面点头像无反应；连续点几次没进信息统计页就先让给其他页面处理。
+    now = time.time()
+    if now < task.node_status.get("save_target_member_skip_until", 0):
+        return False
+    attempts = task.node_status.get("save_target_member_attempts", 0)
+    if attempts >= SAVE_TARGET_MEMBER_MAX_ATTEMPTS:
+        task.node_status["save_target_member_attempts"] = 0
+        task.node_status["save_target_member_skip_until"] = now + SAVE_TARGET_MEMBER_RETRY_SECONDS
+        task.log_info(
+            f"连续{attempts}次点击头像未进入信息统计页面，"
+            f"{SAVE_TARGET_MEMBER_RETRY_SECONDS}秒内先处理当前页面"
+        )
+        return False
 
+    task.node_status["save_target_member_attempts"] = attempts + 1
     task.log_info("前往获取刷存档主战员头像特征")
     _move_and_click(task, 0.182, 0.081)
     task.sleep(2)
@@ -657,15 +747,55 @@ def _octopus_handoff_finished(task: TriggerTask):
     ))
 
 
+OCTOPUS_DROP_KEYWORDS = ("乱世之触", "怪异之壳", "混沌之识", "灾难之像", "随机之球", "错乱之骰")
+OCTOPUS_NAME_KEYWORDS = (
+    "赛内克图斯", "赛内克", "无限之触手", "无尽之触手",
+    "无限的触手", "无尽的触手", "触手+2", "触手＋2",
+)
+
+
 def _octopus_equipment_target(task: TriggerTask):
     """读取要刷的章鱼装备名称。留空表示不启用。"""
     target = _get_config_value(task, "刷章鱼装备", "")
-    return target if isinstance(target, str) else ""
+    return target.strip() if isinstance(target, str) else ""
 
 
 def _text_matches_keyword(text, keyword):
     """双向包含匹配装备名关键字。"""
     return bool(text and keyword and (text in keyword or keyword in text))
+
+
+def _octopus_text_hit(task: TriggerTask):
+    """战斗 OCR 或顶部名称里出现章鱼名时返回命中关键字。"""
+    boxes = getattr(task, "all_texts", None)
+    if not isinstance(boxes, (list, tuple)):
+        return None
+    blobs = [
+        getattr(box, "name", "") or ""
+        for box in boxes
+    ]
+    joined = "".join(blobs)
+    hit = next((keyword for keyword in OCTOPUS_NAME_KEYWORDS if keyword in joined), None)
+    if hit:
+        return hit
+    title = _get_region_text(task, (0.28, 0.000, 0.74, 0.170))
+    if not title:
+        return None
+    return next((keyword for keyword in OCTOPUS_NAME_KEYWORDS if keyword in title), None)
+
+
+def _is_octopus_drop_name(name):
+    return any(_text_matches_keyword(name, keyword) for keyword in OCTOPUS_DROP_KEYWORDS)
+
+
+def _mark_octopus_seen(task: TriggerTask, reason):
+    """本关遇到章鱼后才开始核对掉落。重复标记只记一次日志。"""
+    status = getattr(task, "node_status", None)
+    if not isinstance(status, dict) or status.get("octopus_seen"):
+        return False
+    status["octopus_seen"] = True
+    task.log_info(f"本局已遇到章鱼（{reason}），本关所有装备都会和指定名称比较，回到路线时仍未命中则重开")
+    return True
 
 
 def _is_route_page(task: TriggerTask):
@@ -767,6 +897,10 @@ def _record_stage_equipment(task: TriggerTask, status, target):
     names = _equipment_reward_names(task)
     if not names:
         return False
+    if any(_is_octopus_drop_name(name) for name in names):
+        _mark_octopus_seen(task, f"装备掉落{names}")
+    if not status.get("octopus_seen"):
+        return False
     matched = any(_text_matches_keyword(name, target) for name in names)
     new_names = [name for name in names if _remember_equipment_name(status, name)]
     if matched and not status.get("octopus_drop_matched"):
@@ -790,10 +924,12 @@ def handle_octopus_equipment_drop(task: TriggerTask):
             return True
         _clear_octopus_drop_state(status)
         return False
-    if not status.get("octopus_seen") or status.get("octopus_drop_checked"):
+    if status.get("octopus_drop_checked"):
         return False
     if _is_equipment_page(task):
         return _record_stage_equipment(task, status, target)
+    if not status.get("octopus_seen"):
+        return False
     if _in_battle(task) or not _is_route_page(task):
         return False
     if status.get("octopus_drop_matched"):
@@ -810,23 +946,36 @@ def handle_octopus_handoff(task: TriggerTask):
     if not pause_enabled and not farm_target:
         task._octopus_handoff = False
         return False
-    match = match_octopus(task.frame)
+    try:
+        match = match_octopus(task.frame)
+    except (OSError, RuntimeError) as e:
+        if not getattr(task, "_octopus_template_error_logged", False):
+            task._octopus_template_error_logged = True
+            task.log_warning(f"章鱼眼部检测失败：{e}")
+        return False
     enemy = match if match and match.confidence >= OCTOPUS_THRESHOLD else None
+    ocr_hit = _octopus_text_hit(task)
+    spotted = bool(enemy or ocr_hit)
     now = time.time()
     if now - getattr(task, '_octopus_scan_log_time', 0) >= 30:
         task._octopus_scan_log_time = now
         score = match.confidence if match else 0.0
-        task.log_info(f"章鱼眼部检测：最高相似度={score:.4f}，阈值={OCTOPUS_THRESHOLD}")
-    if enemy and farm_target and isinstance(getattr(task, "node_status", None), dict):
-        if not task.node_status.get("octopus_seen"):
-            task.node_status["octopus_seen"] = True
-            task.log_info("本局已遇到章鱼，本关所有装备都会和指定名称比较，回到路线时仍未命中则重开")
+        extra = f"，OCR命中「{ocr_hit}」" if ocr_hit else ""
+        task.log_info(
+            f"章鱼眼部检测：最高相似度={score:.4f}，阈值={OCTOPUS_THRESHOLD}{extra}"
+        )
+    if spotted and farm_target:
+        reason = (
+            f"眼部模板相似度={enemy.confidence:.4f}"
+            if enemy else f"OCR「{ocr_hit}」"
+        )
+        _mark_octopus_seen(task, reason)
     if not pause_enabled:
         return False
     pending = getattr(task, "_octopus_handoff", False)
-    if not enemy and not pending:
+    if not spotted and not pending:
         return False
-    if not enemy and _octopus_handoff_finished(task):
+    if not spotted and _octopus_handoff_finished(task):
         task._octopus_handoff = False
         # 手动处理期间不计入画面卡住时间，避免恢复后马上执行随机兜底。
         task._prev_frame_gray = None
@@ -839,6 +988,8 @@ def handle_octopus_handoff(task: TriggerTask):
         task.log_info(f"检测到章鱼，眼部模板相似度={enemy.confidence:.4f}，"
                       f"位置=({enemy.x},{enemy.y},{enemy.width},{enemy.height})",
                       screenshot=True)
+    elif ocr_hit:
+        task.log_info(f"检测到章鱼，OCR命中「{ocr_hit}」", screenshot=True)
     message = "章鱼接管：无法确认自动战斗已关闭，请手动检查开关。"
     try:
         auto_enabled = _octopus_auto_battle_state(task)

@@ -2,18 +2,14 @@ import ok
 import sys
 import os
 import traceback
-from src.config import config
+from src.config import apply_frozen_runtime_paths, config
 from src.ui.SponsorDialog import install_sponsor_dialog
 
 if __name__ == '__main__':
     try:
         install_sponsor_dialog()
-        # PyInstaller --onefile mode: 切换数据目录，但配置文件保存在 exe 所在位置
-        if getattr(sys, 'frozen', False):
-            exe_dir = os.path.dirname(sys.executable)
-            os.chdir(sys._MEIPASS)
-            config["config_folder"] = os.path.join(exe_dir, "configs")
-        config = config
+        # PyInstaller --onefile mode: 数据在临时目录，配置/日志/截图保存在 exe 旁
+        config = apply_frozen_runtime_paths(config)
         ok = ok.OK(config)
         ok.start()
     except Exception as e:
